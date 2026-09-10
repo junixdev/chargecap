@@ -12,11 +12,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use objc2::MainThreadMarker;
-use proto::Status;
+use proto::{MagsafeLedMode, Status};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 use app::state::AppState;
@@ -27,8 +29,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Menu id prefix for the preset rows.
 const PRESET_PREFIX: &str = "preset:";
+const MAGSAFE_PREFIX: &str = "magsafe:";
 const ID_CUSTOM: &str = "custom";
 const ID_ENABLED: &str = "enabled";
+const ID_DISCHARGE: &str = "discharge";
+const ID_TOP_UP: &str = "top_up";
 const ID_LOGIN: &str = "login";
 const ID_LOG: &str = "log";
 const ID_QUIT: &str = "quit";
@@ -128,6 +133,9 @@ enum Action {
     Preset(u8),
     Custom,
     ToggleEnabled,
+    ToggleDischarge,
+    ToggleTopUp,
+    SetMagsafeLed(MagsafeLedMode),
     ToggleLogin,
     OpenLog,
     Quit,
@@ -139,9 +147,20 @@ impl Action {
         if let Some(rest) = id.strip_prefix(PRESET_PREFIX) {
             return rest.parse().ok().map(Action::Preset);
         }
+        if let Some(rest) = id.strip_prefix(MAGSAFE_PREFIX) {
+            let mode = match rest {
+                "system" => MagsafeLedMode::System,
+                "off" => MagsafeLedMode::Off,
+                "reflect" => MagsafeLedMode::Reflect,
+                _ => return None,
+            };
+            return Some(Action::SetMagsafeLed(mode));
+        }
         match id {
             ID_CUSTOM => Some(Action::Custom),
             ID_ENABLED => Some(Action::ToggleEnabled),
+            ID_DISCHARGE => Some(Action::ToggleDischarge),
+            ID_TOP_UP => Some(Action::ToggleTopUp),
             ID_LOGIN => Some(Action::ToggleLogin),
             ID_LOG => Some(Action::OpenLog),
             ID_QUIT => Some(Action::Quit),
@@ -180,6 +199,27 @@ fn handle(
                 set_limit(mtm, socket, state_path, app_state, app_state.last_upper)
             }
             Some(_) => set_limit(mtm, socket, state_path, app_state, proto::MAX_UPPER),
+            None => dialog::error(mtm, ui::NOT_RUNNING_ROW),
+        },
+        Action::ToggleDischarge => match latest {
+            Some(status) => send_request(
+                mtm,
+                socket,
+                proto::Request::SetAdapter {
+                    enabled: !status.adapter_enabled,
+                },
+            ),
+            None => dialog::error(mtm, ui::NOT_RUNNING_ROW),
+        },
+        Action::ToggleTopUp => match latest {
+            Some(status) if status.top_up_active => {
+                send_request(mtm, socket, proto::Request::CancelTopUp)
+            }
+            Some(_) => send_request(mtm, socket, proto::Request::TopUp),
+            None => dialog::error(mtm, ui::NOT_RUNNING_ROW),
+        },
+        Action::SetMagsafeLed(mode) => match latest {
+            Some(_) => send_request(mtm, socket, proto::Request::SetMagsafeLed { mode }),
             None => dialog::error(mtm, ui::NOT_RUNNING_ROW),
         },
         Action::ToggleLogin => {
@@ -225,6 +265,13 @@ fn set_limit(
     }
 }
 
+/// Sends `request` to the daemon, showing an error alert if it fails.
+fn send_request(mtm: MainThreadMarker, socket: &std::path::Path, request: proto::Request) {
+    if let Err(err) = client::send(socket, &request) {
+        dialog::error(mtm, &err.to_string());
+    }
+}
+
 /// Parses and validates the text from the "Custom…" dialog.
 fn parse_limit(text: &str) -> Result<u8, String> {
     let trimmed = text.trim().trim_end_matches('%').trim();
@@ -242,6 +289,9 @@ struct Ui {
     limit: MenuItem,
     presets: Vec<(u8, CheckMenuItem)>,
     enabled: CheckMenuItem,
+    discharge: CheckMenuItem,
+    top_up: CheckMenuItem,
+    magsafe_led: Vec<(MagsafeLedMode, CheckMenuItem)>,
     login: CheckMenuItem,
     daemon: MenuItem,
 }
@@ -272,8 +322,47 @@ impl Ui {
         menu.append(&PredefinedMenuItem::separator())?;
 
         let enabled = CheckMenuItem::with_id(ID_ENABLED, "Limit enabled", true, false, None);
-        let login = CheckMenuItem::with_id(ID_LOGIN, "Launch at login", true, login_enabled, None);
         menu.append(&enabled)?;
+
+        let discharge =
+            CheckMenuItem::with_id(ID_DISCHARGE, "Discharge to limit", true, false, None);
+        let top_up = CheckMenuItem::with_id(ID_TOP_UP, "Top up to 100% once", true, false, None);
+        menu.append(&discharge)?;
+        menu.append(&top_up)?;
+
+        let magsafe_menu = Submenu::new("MagSafe LED", true);
+        let magsafe_led: Vec<(MagsafeLedMode, CheckMenuItem)> = vec![
+            (
+                MagsafeLedMode::System,
+                CheckMenuItem::with_id(
+                    format!("{MAGSAFE_PREFIX}system"),
+                    "System",
+                    true,
+                    true,
+                    None,
+                ),
+            ),
+            (
+                MagsafeLedMode::Off,
+                CheckMenuItem::with_id(format!("{MAGSAFE_PREFIX}off"), "Off", true, false, None),
+            ),
+            (
+                MagsafeLedMode::Reflect,
+                CheckMenuItem::with_id(
+                    format!("{MAGSAFE_PREFIX}reflect"),
+                    "Reflect charging",
+                    true,
+                    false,
+                    None,
+                ),
+            ),
+        ];
+        for (_, item) in &magsafe_led {
+            magsafe_menu.append(item)?;
+        }
+        menu.append(&magsafe_menu)?;
+
+        let login = CheckMenuItem::with_id(ID_LOGIN, "Launch at login", true, login_enabled, None);
         menu.append(&login)?;
         menu.append(&PredefinedMenuItem::separator())?;
 
@@ -296,6 +385,9 @@ impl Ui {
             limit,
             presets,
             enabled,
+            discharge,
+            top_up,
+            magsafe_led,
             login,
             daemon,
         })
@@ -318,6 +410,19 @@ impl Ui {
         self.enabled
             .set_checked(matches!(upper, Some(upper) if upper < proto::MAX_UPPER));
         self.enabled.set_enabled(status.is_some());
+
+        self.discharge
+            .set_checked(matches!(status, Some(s) if !s.adapter_enabled));
+        self.discharge.set_enabled(status.is_some());
+        self.top_up
+            .set_checked(matches!(status, Some(s) if s.top_up_active));
+        self.top_up.set_enabled(status.is_some());
+
+        let led = status.map(|s| s.magsafe_led);
+        for (mode, item) in &self.magsafe_led {
+            item.set_checked(led == Some(*mode));
+            item.set_enabled(status.is_some());
+        }
     }
 
     fn set_login(&mut self, enabled: bool) {

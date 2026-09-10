@@ -37,6 +37,12 @@ pub fn title(status: Option<&Status>) -> String {
         return UNKNOWN_TITLE.to_string();
     };
     let percent = status.battery_percent;
+    if !status.adapter_enabled {
+        return format!("{percent}% ↓");
+    }
+    if status.top_up_active {
+        return format!("{percent}% ↑ 100");
+    }
     if status.upper >= MAX_UPPER {
         return format!("{percent}% ∞");
     }
@@ -120,6 +126,28 @@ mod tests {
             top_up_active: false,
             last_error: None,
         }
+    }
+
+    #[test]
+    fn title_discharging() {
+        let mut s = status(78, true, false, 80);
+        s.adapter_enabled = false;
+        assert_eq!(title(Some(&s)), "78% ↓");
+    }
+
+    #[test]
+    fn title_topping_up() {
+        let mut s = status(78, true, true, 80);
+        s.top_up_active = true;
+        assert_eq!(title(Some(&s)), "78% ↑ 100");
+    }
+
+    #[test]
+    fn title_discharging_wins_over_top_up() {
+        let mut s = status(78, true, false, 80);
+        s.adapter_enabled = false;
+        s.top_up_active = true;
+        assert_eq!(title(Some(&s)), "78% ↓");
     }
 
     #[test]

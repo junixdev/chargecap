@@ -121,7 +121,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use proto::MagsafeLedMode;
-    use smc::{MockDriver, Smc, KEY_ACW, KEY_BUIC, KEY_CH0B, KEY_CH0C};
+    use smc::{MockDriver, Smc, KEY_ACW, KEY_BUIC, KEY_CH0B, KEY_CH0C, KEY_CH0J};
     use std::path::PathBuf;
 
     fn socket_path(tag: &str) -> PathBuf {
@@ -135,7 +135,8 @@ mod tests {
         mock.seed(KEY_CH0B, &[0x00])
             .seed(KEY_CH0C, &[0x00])
             .seed(KEY_BUIC, &[79])
-            .seed(KEY_ACW, &[0x01]);
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_CH0J, &[0x00]);
         Daemon::new(Smc::new(mock), Config::default(), config_path)
     }
 
@@ -168,8 +169,10 @@ mod tests {
                 upper: 85,
                 lower: None,
             },
+            // Below the fixture's 79% battery, so discharging does not
+            // immediately re-enable the adapter once `SetAdapter` runs.
             Request::SetLimit {
-                upper: 85,
+                upper: 75,
                 lower: Some(70),
             },
             Request::SetAdapter { enabled: false },
@@ -220,7 +223,7 @@ mod tests {
 
         // The last accepted limit is the one that stuck.
         let status = daemon.lock().unwrap().status();
-        assert_eq!((status.upper, status.lower), (85, 70));
+        assert_eq!((status.upper, status.lower), (75, 70));
         assert_eq!(status.magsafe_led, MagsafeLedMode::Reflect);
         assert!(!status.adapter_enabled);
         assert!(!status.top_up_active);

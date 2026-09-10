@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use proto::{ChargeControlMode, Request, Response, Status};
-use smc::{Driver, Smc};
+use proto::{ChargeControlMode, MagsafeLedMode, Request, Response, Status};
+use smc::{Driver, MagsafeLed, Smc};
 
 use crate::config::Config;
 use crate::control::{Action, ControlLoop, PowerEvent};
@@ -45,16 +45,94 @@ impl<D: Driver> Daemon<D> {
     /// Runs one control tick. Every SMC error is logged and stored, and the
     /// loop keeps running.
     pub fn tick(&mut self) {
-        match self
-            .control
-            .tick(&mut self.smc, &self.config, Instant::now())
-        {
+        let effective = self.effective_config();
+        match self.control.tick(&mut self.smc, &effective, Instant::now()) {
             Ok(Action::Sailing) => {}
             Ok(action) => {
                 self.last_error = None;
                 logging::info(format!("tick: {action:?}"));
             }
             Err(err) => self.record_error(format!("tick failed: {err}")),
+        }
+        self.tick_discharge();
+        self.tick_top_up();
+        self.tick_magsafe_led();
+    }
+
+    /// Returns the config the charge-band control loop should see this tick.
+    ///
+    /// A top-up in progress behaves as if the limit were off: the band stays
+    /// untouched in `self.config`, so it comes straight back once the top-up
+    /// ends.
+    fn effective_config(&self) -> Config {
+        if self.config.top_up_active {
+            Config {
+                upper: proto::MAX_UPPER,
+                lower: proto::MAX_UPPER,
+                ..self.config.clone()
+            }
+        } else {
+            self.config.clone()
+        }
+    }
+
+    /// Re-enables the adapter once discharging has reached the limit.
+    fn tick_discharge(&mut self) {
+        if self.config.adapter_enabled || !self.smc.has_adapter_control() {
+            return;
+        }
+        let Some(percent) = self.read(|smc| smc.battery_percent()) else {
+            return;
+        };
+        if percent > self.config.upper {
+            return;
+        }
+        if let Err(err) = self.smc.set_adapter_enabled(true) {
+            self.record_error(format!("cannot re-enable the adapter: {err}"));
+            return;
+        }
+        self.config.adapter_enabled = true;
+        self.save_config();
+        logging::info("discharge reached limit");
+    }
+
+    /// Ends a top-up once the battery is full or the Mac is unplugged.
+    fn tick_top_up(&mut self) {
+        if !self.config.top_up_active {
+            return;
+        }
+        let percent = self.read(|smc| smc.battery_percent()).unwrap_or(0);
+        let plugged_in = self.read(|smc| smc.is_plugged_in()).unwrap_or(true);
+        if percent < 100 && plugged_in {
+            return;
+        }
+        self.config.top_up_active = false;
+        self.save_config();
+        logging::info("top-up finished");
+    }
+
+    /// Drives the MagSafe LED toward the configured mode, writing only when
+    /// the colour actually needs to change.
+    fn tick_magsafe_led(&mut self) {
+        if !self.smc.has_magsafe_led() {
+            return;
+        }
+        let mode = self.smc.charge_control_mode();
+        let percent = self.read(|smc| smc.battery_percent()).unwrap_or(0);
+        let plugged_in = self.read(|smc| smc.is_plugged_in()).unwrap_or(false);
+        let allowed = self.charging_allowed(mode, percent);
+        let want = match self.config.magsafe_led {
+            MagsafeLedMode::System => MagsafeLed::System,
+            MagsafeLedMode::Off => MagsafeLed::Off,
+            MagsafeLedMode::Reflect if !plugged_in => MagsafeLed::System,
+            MagsafeLedMode::Reflect if allowed => MagsafeLed::Orange,
+            MagsafeLedMode::Reflect => MagsafeLed::Green,
+        };
+        if self.read(|smc| smc.magsafe_led()) == Some(want) {
+            return;
+        }
+        if let Err(err) = self.smc.set_magsafe_led(want) {
+            self.record_error(format!("cannot set the MagSafe LED: {err}"));
         }
     }
 
@@ -96,6 +174,12 @@ impl<D: Driver> Daemon<D> {
                 self.tick();
             }
             Request::SetAdapter { enabled } => {
+                if !self.smc.has_adapter_control() {
+                    return Response::err("adapter control not supported");
+                }
+                if let Err(err) = self.smc.set_adapter_enabled(enabled) {
+                    return Response::err(err.to_string());
+                }
                 self.config.adapter_enabled = enabled;
                 self.save_config();
                 logging::info(format!("adapter enabled: {enabled}"));
@@ -109,6 +193,8 @@ impl<D: Driver> Daemon<D> {
                 self.config.top_up_active = true;
                 self.save_config();
                 logging::info("top-up requested");
+                // The new band takes effect at once, not on the next tick.
+                self.tick();
             }
             Request::CancelTopUp => {
                 self.config.top_up_active = false;
@@ -143,18 +229,25 @@ impl<D: Driver> Daemon<D> {
         }
     }
 
-    /// Opens the charge gate and returns the MagSafe LED to the system.
+    /// Opens the charge gate, re-enables the adapter and returns the MagSafe
+    /// LED to the system.
     ///
     /// Called on SIGTERM/SIGINT and by `uninstall`. The machine must never
-    /// be left with charging switched off.
+    /// be left discharging, with charging switched off, or with the LED
+    /// showing a state the daemon chose.
     pub fn reset_charge_control(&mut self) {
         if let Err(err) = self.smc.reset_charge_control() {
             logging::error(format!("cannot reset charge control: {err}"));
         } else {
             logging::info("charge control reset: charging allowed");
         }
+        if self.smc.has_adapter_control() {
+            if let Err(err) = self.smc.set_adapter_enabled(true) {
+                logging::error(format!("cannot re-enable the adapter: {err}"));
+            }
+        }
         if self.smc.has_magsafe_led() {
-            if let Err(err) = self.smc.set_magsafe_led(smc::MagsafeLed::System) {
+            if let Err(err) = self.smc.set_magsafe_led(MagsafeLed::System) {
                 logging::error(format!("cannot reset MagSafe LED: {err}"));
             }
         }
@@ -202,7 +295,10 @@ impl<D: Driver> Daemon<D> {
 mod tests {
     use super::*;
     use proto::MagsafeLedMode;
-    use smc::{MockDriver, KEY_ACW, KEY_BUIC, KEY_CH0B, KEY_CH0C};
+    use smc::{
+        MockDriver, KEY_ACLC, KEY_ACW, KEY_BFD0, KEY_BFE0, KEY_BFF0, KEY_BUIC, KEY_CH0B, KEY_CH0C,
+        KEY_CH0J, KEY_CHIE,
+    };
 
     fn daemon() -> (Daemon<MockDriver>, MockDriver, PathBuf) {
         let mock = MockDriver::new();
@@ -274,7 +370,22 @@ mod tests {
 
     #[test]
     fn contract_commands_are_persisted_and_echoed() {
-        let (mut daemon, _mock, path) = daemon();
+        // 90% is above the default limit, so discharge stays off even once
+        // `TopUp` re-ticks the loop.
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x00])
+            .seed(KEY_CH0C, &[0x00])
+            .seed(KEY_BUIC, &[90])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_CH0J, &[0x00]);
+        let path = std::env::temp_dir().join(format!(
+            "chargecap-state-contract-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut daemon = Daemon::new(Smc::new(mock), Config::default(), path.clone());
+
         assert!(daemon.apply(Request::SetAdapter { enabled: false }).ok);
         assert!(
             daemon
@@ -295,6 +406,234 @@ mod tests {
         let status = daemon.apply(Request::CancelTopUp).status.unwrap();
         assert!(!status.top_up_active);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn discharge_writes_the_adapter_gate_and_re_enables_at_the_limit() {
+        // The gate starts inhibited, matching the band at 90% with the
+        // default 80% limit, so the band itself writes nothing below.
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x02])
+            .seed(KEY_CH0C, &[0x02])
+            .seed(KEY_BUIC, &[90])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_CH0J, &[0x00]);
+        let path = std::env::temp_dir().join(format!(
+            "chargecap-state-discharge-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), path.clone());
+
+        let response = daemon.apply(Request::SetAdapter { enabled: false });
+        assert!(response.ok);
+        assert_eq!(mock.writes(), vec![(KEY_CH0J.to_string(), vec![0x01])]);
+        assert!(!Config::load(&path).unwrap().adapter_enabled);
+
+        // Still above the limit: the tick leaves the adapter disabled.
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+
+        // The battery has reached the limit: the tick re-enables the adapter
+        // and persists it.
+        mock.seed(KEY_BUIC, &[80]);
+        mock.clear_writes();
+        daemon.tick();
+        assert_eq!(mock.writes(), vec![(KEY_CH0J.to_string(), vec![0x00])]);
+        assert!(Config::load(&path).unwrap().adapter_enabled);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn discharge_uses_the_chie_off_value_on_tahoe() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x00])
+            .seed(KEY_CH0C, &[0x00])
+            .seed(KEY_BUIC, &[90])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_CHIE, &[0x00]);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+
+        assert!(daemon.apply(Request::SetAdapter { enabled: false }).ok);
+        assert_eq!(mock.writes(), vec![(KEY_CHIE.to_string(), vec![0x08])]);
+    }
+
+    #[test]
+    fn discharge_without_an_adapter_key_is_refused() {
+        let (mut daemon, mock, path) = daemon();
+        let response = daemon.apply(Request::SetAdapter { enabled: false });
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("adapter control not supported")
+        );
+        assert!(mock.writes().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn magsafe_led_reflects_the_charge_gate() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x00])
+            .seed(KEY_CH0C, &[0x00])
+            .seed(KEY_BUIC, &[70])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_ACLC, &[0x00]);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+        daemon.apply(Request::SetMagsafeLed {
+            mode: MagsafeLedMode::Reflect,
+        });
+
+        // Allowed and plugged in: Orange.
+        daemon.tick();
+        assert_eq!(mock.value(KEY_ACLC), Some(vec![0x04]));
+
+        // Nothing changed, so the second tick writes nothing.
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+
+        // Above the limit, so the control loop inhibits the gate: Green.
+        mock.seed(KEY_BUIC, &[80]);
+        daemon.tick();
+        assert_eq!(mock.value(KEY_ACLC), Some(vec![0x03]));
+
+        // Unplugged: System.
+        mock.seed(KEY_ACW, &[0x00]);
+        daemon.tick();
+        assert_eq!(mock.value(KEY_ACLC), Some(vec![0x00]));
+    }
+
+    #[test]
+    fn magsafe_led_off_and_system_write_once() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x00])
+            .seed(KEY_CH0C, &[0x00])
+            .seed(KEY_BUIC, &[70])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_ACLC, &[0x00]);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+
+        daemon.apply(Request::SetMagsafeLed {
+            mode: MagsafeLedMode::Off,
+        });
+        daemon.tick();
+        assert_eq!(mock.writes(), vec![(KEY_ACLC.to_string(), vec![0x01])]);
+
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+
+        daemon.apply(Request::SetMagsafeLed {
+            mode: MagsafeLedMode::System,
+        });
+        mock.clear_writes();
+        daemon.tick();
+        assert_eq!(mock.writes(), vec![(KEY_ACLC.to_string(), vec![0x00])]);
+
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+    }
+
+    #[test]
+    fn top_up_opens_the_legacy_gate_and_restores_the_limit_at_100() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x02])
+            .seed(KEY_CH0C, &[0x02])
+            .seed(KEY_BUIC, &[85])
+            .seed(KEY_ACW, &[0x01]);
+        let path = std::env::temp_dir().join(format!(
+            "chargecap-state-topup-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), path.clone());
+
+        let status = daemon.apply(Request::TopUp).status.unwrap();
+        assert!(status.top_up_active);
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x00]),
+                (KEY_CH0C.to_string(), vec![0x00]),
+            ]
+        );
+
+        // The battery is full: the flag clears, and the real limit is
+        // restored on the following tick, not this one.
+        mock.seed(KEY_BUIC, &[100]);
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+        assert!(!Config::load(&path).unwrap().top_up_active);
+
+        mock.clear_writes();
+        daemon.tick();
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x02]),
+                (KEY_CH0C.to_string(), vec![0x02]),
+            ]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn top_up_clears_and_rearms_the_firmware_limit() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_BFF0, &[0x02])
+            .seed(KEY_BFD0, &[80, 0, 0, 0])
+            .seed(KEY_BFE0, &[78, 0, 0, 0])
+            .seed(KEY_BUIC, &[85])
+            .seed(KEY_ACW, &[0x01]);
+        let config = Config {
+            upper: 80,
+            lower: 78,
+            ..Config::default()
+        };
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), config, "/dev/null");
+
+        let status = daemon.apply(Request::TopUp).status.unwrap();
+        assert!(status.top_up_active);
+        assert_eq!(mock.writes(), vec![(KEY_BFF0.to_string(), vec![0x00])]);
+
+        mock.seed(KEY_BUIC, &[100]);
+        mock.clear_writes();
+        daemon.tick();
+        assert!(mock.writes().is_empty());
+
+        mock.clear_writes();
+        daemon.tick();
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_BFD0.to_string(), vec![80, 0, 0, 0]),
+                (KEY_BFE0.to_string(), vec![78, 0, 0, 0]),
+                (KEY_BFF0.to_string(), vec![0x02]),
+            ]
+        );
+    }
+
+    #[test]
+    fn reset_charge_control_re_enables_the_adapter_and_the_led() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x02])
+            .seed(KEY_CH0C, &[0x02])
+            .seed(KEY_BUIC, &[90])
+            .seed(KEY_ACW, &[0x01])
+            .seed(KEY_CH0J, &[0x01])
+            .seed(KEY_ACLC, &[0x04]);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+
+        daemon.reset_charge_control();
+        assert_eq!(mock.value(KEY_CH0J), Some(vec![0x00]));
+        assert_eq!(mock.value(KEY_ACLC), Some(vec![0x00]));
+        assert!(mock.value(KEY_CH0B).unwrap()[0] == 0x00);
     }
 
     #[test]
