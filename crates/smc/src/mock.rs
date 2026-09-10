@@ -1,7 +1,7 @@
 //! In-memory [`Driver`] for tests.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::driver::{
@@ -16,6 +16,8 @@ struct MockState {
     keys: BTreeMap<u32, (u32, Vec<u8>)>,
     /// Every write, in order, as `(key, bytes)`.
     writes: Vec<(String, Vec<u8>)>,
+    /// Keys whose stored bytes a write records but does not change.
+    sticky: BTreeSet<u32>,
 }
 
 /// A fake SMC backed by a map. Clones share one state, so a test can keep a
@@ -39,6 +41,18 @@ impl MockDriver {
             _ => "hex_",
         };
         self.seed_typed(key, data_type, bytes)
+    }
+
+    /// Adds a key that accepts a write but keeps returning `bytes`.
+    ///
+    /// Models a key the firmware owns, such as `ACLC`: writing `0x00` hands
+    /// the MagSafe LED back to the system, and the next read reports the
+    /// colour the system chose, never the byte that was written.
+    pub fn seed_sticky(&self, key: &str, bytes: &[u8]) -> &Self {
+        self.seed(key, bytes);
+        let key = fourcc(key).expect("4-character key");
+        self.state.borrow_mut().sticky.insert(key);
+        self
     }
 
     /// Adds a key with an explicit data type FourCC.
@@ -96,10 +110,12 @@ impl Driver for MockDriver {
             CMD_WRITE_BYTES => {
                 let len = (input.key_info.data_size as usize).min(MAX_DATA_LEN);
                 let written = input.bytes[..len].to_vec();
-                state
-                    .keys
-                    .insert(input.key, (data_type, written.clone()))
-                    .expect("key was present");
+                if !state.sticky.contains(&input.key) {
+                    state
+                        .keys
+                        .insert(input.key, (data_type, written.clone()))
+                        .expect("key was present");
+                }
                 state.writes.push((fourcc_str(input.key), written));
             }
             other => {

@@ -22,6 +22,8 @@ pub struct Daemon<D: Driver> {
     control: ControlLoop,
     config_path: PathBuf,
     last_error: Option<String>,
+    /// The last MagSafe LED value the daemon wrote, if any.
+    led_written: Option<MagsafeLed>,
 }
 
 impl<D: Driver> Daemon<D> {
@@ -33,6 +35,7 @@ impl<D: Driver> Daemon<D> {
             control: ControlLoop::new(),
             config_path: config_path.into(),
             last_error: None,
+            led_written: None,
         }
     }
 
@@ -128,12 +131,23 @@ impl<D: Driver> Daemon<D> {
             MagsafeLedMode::Reflect if allowed => MagsafeLed::Orange,
             MagsafeLedMode::Reflect => MagsafeLed::Green,
         };
-        if self.read(|smc| smc.magsafe_led()) == Some(want) {
+        // WARNING: writing `System` hands the LED back to the firmware, so a
+        // read after it reports the live colour and never `System`. Compare
+        // that case with the last value the daemon wrote, or the daemon
+        // rewrites the key on every tick.
+        let settled = if want == MagsafeLed::System {
+            self.led_written == Some(MagsafeLed::System)
+        } else {
+            self.read(|smc| smc.magsafe_led()) == Some(want)
+        };
+        if settled {
             return;
         }
         if let Err(err) = self.smc.set_magsafe_led(want) {
             self.record_error(format!("cannot set the MagSafe LED: {err}"));
+            return;
         }
+        self.led_written = Some(want);
     }
 
     /// Handles one sleep or wake notification.
@@ -249,6 +263,8 @@ impl<D: Driver> Daemon<D> {
         if self.smc.has_magsafe_led() {
             if let Err(err) = self.smc.set_magsafe_led(MagsafeLed::System) {
                 logging::error(format!("cannot reset MagSafe LED: {err}"));
+            } else {
+                self.led_written = Some(MagsafeLed::System);
             }
         }
     }
@@ -504,6 +520,35 @@ mod tests {
         mock.seed(KEY_ACW, &[0x00]);
         daemon.tick();
         assert_eq!(mock.value(KEY_ACLC), Some(vec![0x00]));
+    }
+
+    /// Regression: on real hardware a read after writing `System` reports
+    /// the live colour, so comparing the read with the wanted value never
+    /// matched and the daemon rewrote `ACLC` on every tick.
+    #[test]
+    fn magsafe_led_system_writes_once_when_the_read_never_matches() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x02])
+            .seed(KEY_CH0C, &[0x02])
+            .seed(KEY_BUIC, &[90])
+            .seed(KEY_ACW, &[0x01])
+            // The firmware keeps reporting green whatever the daemon writes.
+            .seed_sticky(KEY_ACLC, &[0x02]);
+        // The default LED mode is System.
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+
+        daemon.tick();
+        assert_eq!(mock.writes(), vec![(KEY_ACLC.to_string(), vec![0x00])]);
+
+        mock.clear_writes();
+        for _ in 0..3 {
+            daemon.tick();
+        }
+        assert!(
+            mock.writes().is_empty(),
+            "System mode must not rewrite ACLC every tick, got {:?}",
+            mock.writes()
+        );
     }
 
     #[test]
