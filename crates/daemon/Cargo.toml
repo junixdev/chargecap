@@ -22,3 +22,5 @@ serde_json = "1"
 anyhow = "1"
 # Subcommand parsing (daemon|install|uninstall|status|limit).
 clap = { version = "4", features = ["derive"] }
+# geteuid/chown/signal for the root checks, file ownership and shutdown.
+libc = "0.2"
