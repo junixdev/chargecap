@@ -1,0 +1,24 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Root daemon that talks to the SMC and serves the chargecap socket"
+authors = ["Rymera"]
+# Internal tool — never publish to crates.io.
+publish = false
+
+[[bin]]
+name = "chargecapd"
+path = "src/main.rs"
+
+[dependencies]
+# Wire contract and file paths shared with the app.
+proto = { path = "../proto" }
+# SMC access.
+smc = { path = "../smc" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Error context for CLI/daemon failure paths.
+anyhow = "1"
+# Subcommand parsing (daemon|install|uninstall|status|limit).
+clap = { version = "4", features = ["derive"] }

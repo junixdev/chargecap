@@ -1,0 +1,10 @@
+[package]
+name = "smc"
+version = "0.1.0"
+edition = "2021"
+description = "SMC (System Management Controller) access for battery charge control"
+authors = ["Rymera"]
+# Internal tool — never publish to crates.io.
+publish = false
+
+[dependencies]
