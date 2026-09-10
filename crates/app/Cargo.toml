@@ -7,9 +7,18 @@ authors = ["Rymera"]
 # Internal tool — never publish to crates.io.
 publish = false
 
+[lib]
+name = "app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "chargecap"
 path = "src/main.rs"
+
+# Development stand-in for chargecapd; see src/bin/fake_daemon.rs.
+[[bin]]
+name = "fake-daemon"
+path = "src/bin/fake_daemon.rs"
 
 [dependencies]
 # Wire contract and file paths shared with the daemon.
@@ -18,3 +27,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Error context for startup/socket failure paths.
 anyhow = "1"
+# Menu bar item; re-exports `muda` for the menu.
+tray-icon = "=0.24.2"
+# Event loop with a macOS activation policy (no Dock icon).
+tao = "=0.37.0"
+# NSAlert input dialog for "Custom…".
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", features = [
+    "std",
+    "NSAlert",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSTextField",
+    "NSView",
+    "NSWindow",
+] }
+objc2-foundation = { version = "=0.3.2", features = ["std", "NSGeometry", "NSString"] }
