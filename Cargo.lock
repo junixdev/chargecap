@@ -228,6 +228,9 @@ dependencies = [
 [[package]]
 name = "smc"
 version = "0.1.0"
+dependencies = [
+ "proto",
+]
 
 [[package]]
 name = "strsim"

@@ -8,3 +8,5 @@ authors = ["Rymera"]
 publish = false
 
 [dependencies]
+# Shares `ChargeControlMode` with the daemon and the menu-bar app.
+proto = { path = "../proto" }
