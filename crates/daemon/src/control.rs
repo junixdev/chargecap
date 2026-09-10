@@ -36,12 +36,27 @@ pub enum Action {
     FirmwareCleared,
     /// This Mac has no charge control.
     Unsupported,
+    /// The gate was closed because the machine is about to sleep.
+    InhibitedForSleep,
+}
+
+/// A sleep or wake notification from the system.
+///
+/// The daemon reacts to both in legacy mode only: firmware mode holds the
+/// band in hardware, so the machine keeps the limit while it sleeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerEvent {
+    /// The machine is about to sleep. The control loop stops running.
+    WillSleep,
+    /// The machine has woken. The battery reading is stale.
+    DidWake,
 }
 
 /// Loop state that survives between ticks.
 #[derive(Debug, Default)]
 pub struct ControlLoop {
     last_tick: Option<Instant>,
+    resume_after_wake: bool,
 }
 
 impl ControlLoop {
@@ -55,7 +70,13 @@ impl ControlLoop {
     pub fn with_last_tick(last_tick: Instant) -> Self {
         Self {
             last_tick: Some(last_tick),
+            resume_after_wake: false,
         }
+    }
+
+    /// Reports whether the gate was closed for sleep and not yet re-checked.
+    pub fn resume_after_wake(&self) -> bool {
+        self.resume_after_wake
     }
 
     /// Runs one tick of the control loop and returns what it did.
@@ -78,6 +99,68 @@ impl ControlLoop {
             ChargeControlMode::Firmware => tick_firmware(smc, config),
             ChargeControlMode::Legacy => tick_legacy(smc, config, missed),
         }
+    }
+
+    /// Handles one sleep or wake notification and returns what it did.
+    ///
+    /// Both events are no-ops unless the Mac is in legacy mode with a live
+    /// limit: firmware mode holds the band in hardware, and an upper of 100
+    /// means the user turned the limit off.
+    pub fn on_power_event<D: Driver>(
+        &mut self,
+        smc: &mut Smc<D>,
+        config: &Config,
+        event: PowerEvent,
+        now: Instant,
+    ) -> Result<Action, SmcError> {
+        if smc.charge_control_mode() != ChargeControlMode::Legacy
+            || config.upper >= proto::MAX_UPPER
+        {
+            return Ok(Action::Sailing);
+        }
+        match event {
+            PowerEvent::WillSleep => self.on_will_sleep(smc, config),
+            PowerEvent::DidWake => self.on_did_wake(smc, config, now),
+        }
+    }
+
+    /// Closes the gate before sleep, so a sleeping Mac cannot overshoot.
+    ///
+    /// Below `lower` the gate stays open by default: the machine may need
+    /// the charge, and the missed-tick guard closes the gate on the first
+    /// tick after wake. Set `inhibit_on_sleep_always` to close it anyway.
+    fn on_will_sleep<D: Driver>(
+        &mut self,
+        smc: &mut Smc<D>,
+        config: &Config,
+    ) -> Result<Action, SmcError> {
+        if !smc.is_charging_allowed()? {
+            return Ok(Action::Sailing);
+        }
+        let percent = smc.battery_percent()?;
+        if percent < config.lower && !config.inhibit_on_sleep_always {
+            return Ok(Action::Sailing);
+        }
+        smc.inhibit_charging()?;
+        self.resume_after_wake = true;
+        Ok(Action::InhibitedForSleep)
+    }
+
+    /// Re-evaluates the band as soon as the machine wakes.
+    ///
+    /// The missed-tick guard is skipped for this one tick: the gate state is
+    /// known, because the daemon set it before sleep, so a fresh reading can
+    /// be trusted at once.
+    fn on_did_wake<D: Driver>(
+        &mut self,
+        smc: &mut Smc<D>,
+        config: &Config,
+        now: Instant,
+    ) -> Result<Action, SmcError> {
+        self.last_tick = None;
+        let action = self.tick(smc, config, now);
+        self.resume_after_wake = false;
+        action
     }
 }
 
@@ -183,6 +266,18 @@ mod tests {
     /// Runs one tick with fresh timing and returns the action.
     fn tick(loop_: &mut ControlLoop, smc: &mut Smc<MockDriver>, config: &Config) -> Action {
         loop_.tick(smc, config, Instant::now()).unwrap()
+    }
+
+    /// Delivers one power event with fresh timing and returns the action.
+    fn power(
+        loop_: &mut ControlLoop,
+        smc: &mut Smc<MockDriver>,
+        config: &Config,
+        event: PowerEvent,
+    ) -> Action {
+        loop_
+            .on_power_event(smc, config, event, Instant::now())
+            .unwrap()
     }
 
     #[test]
@@ -348,6 +443,189 @@ mod tests {
         mock.seed(KEY_CH0B, &[0x00]).seed(KEY_CH0C, &[0x00]);
         let mut smc = Smc::new(mock);
         let result = ControlLoop::new().tick(&mut smc, &band(80, 78), Instant::now());
+        assert!(matches!(result, Err(SmcError::KeyNotFound(_))));
+    }
+
+    /// Test 1: at 79% inside a live band, sleep closes the gate.
+    #[test]
+    fn will_sleep_closes_the_gate_inside_the_band() {
+        let config = band(80, 78);
+        let mock = legacy_mock(79, true);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+
+        assert_eq!(
+            power(&mut control, &mut smc, &config, PowerEvent::WillSleep),
+            Action::InhibitedForSleep
+        );
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x02]),
+                (KEY_CH0C.to_string(), vec![0x02]),
+            ]
+        );
+        assert!(control.resume_after_wake());
+    }
+
+    /// Test 2: below `lower` the default config leaves the gate open.
+    #[test]
+    fn will_sleep_leaves_the_gate_open_below_lower() {
+        let config = band(80, 78);
+        let mock = legacy_mock(60, true);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+
+        assert_eq!(
+            power(&mut control, &mut smc, &config, PowerEvent::WillSleep),
+            Action::Sailing
+        );
+        assert!(mock.writes().is_empty());
+        assert!(!control.resume_after_wake());
+    }
+
+    /// Test 3: `inhibit_on_sleep_always` closes the gate below `lower` too.
+    #[test]
+    fn will_sleep_always_closes_the_gate_when_configured() {
+        let config = Config {
+            inhibit_on_sleep_always: true,
+            ..band(80, 78)
+        };
+        let mock = legacy_mock(60, true);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+
+        assert_eq!(
+            power(&mut control, &mut smc, &config, PowerEvent::WillSleep),
+            Action::InhibitedForSleep
+        );
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x02]),
+                (KEY_CH0C.to_string(), vec![0x02]),
+            ]
+        );
+        assert!(control.resume_after_wake());
+    }
+
+    /// Test 4: wake re-checks the band at once, whatever the tick clock says.
+    #[test]
+    fn did_wake_re_checks_the_band_at_once() {
+        let config = band(80, 78);
+
+        // Still inside the band, so the gate stays closed.
+        let mock = legacy_mock(79, true);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+        power(&mut control, &mut smc, &config, PowerEvent::WillSleep);
+        mock.clear_writes();
+        mock.seed(KEY_BUIC, &[79]);
+        assert_eq!(
+            power(&mut control, &mut smc, &config, PowerEvent::DidWake),
+            Action::Sailing
+        );
+        assert!(mock.writes().is_empty());
+        assert!(!control.resume_after_wake());
+
+        // Below `lower` after the sleep, so the gate opens on wake.
+        let mock = legacy_mock(79, true);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+        power(&mut control, &mut smc, &config, PowerEvent::WillSleep);
+        mock.clear_writes();
+        mock.seed(KEY_BUIC, &[70]);
+        assert_eq!(
+            power(&mut control, &mut smc, &config, PowerEvent::DidWake),
+            Action::Allowed
+        );
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x00]),
+                (KEY_CH0C.to_string(), vec![0x00]),
+            ]
+        );
+        assert!(!control.resume_after_wake());
+    }
+
+    /// Test 4, continued: the wake tick ignores the missed-tick guard, so it
+    /// never closes a gate the sleep hook already handled.
+    #[test]
+    fn did_wake_ignores_the_missed_tick_guard() {
+        let config = band(80, 78);
+        let mock = legacy_mock(60, false);
+        let mut smc = Smc::new(mock.clone());
+
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_secs(3600))
+            .expect("test host booted more than an hour ago");
+        let mut control = ControlLoop::with_last_tick(stale);
+
+        // A plain tick would close the gate first. The wake tick trusts the
+        // fresh reading and opens it.
+        assert_eq!(
+            control
+                .on_power_event(&mut smc, &config, PowerEvent::DidWake, now)
+                .unwrap(),
+            Action::Allowed
+        );
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x00]),
+                (KEY_CH0C.to_string(), vec![0x00]),
+            ]
+        );
+    }
+
+    /// Test 5: firmware Macs hold the band in hardware, so both events pass.
+    #[test]
+    fn firmware_mode_ignores_sleep_and_wake() {
+        let config = band(80, 78);
+        let mock = firmware_mock();
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+
+        for event in [PowerEvent::WillSleep, PowerEvent::DidWake] {
+            assert_eq!(
+                power(&mut control, &mut smc, &config, event),
+                Action::Sailing
+            );
+            assert!(mock.writes().is_empty(), "{event:?} wrote to the SMC");
+        }
+    }
+
+    /// Test 6: with the limit off there is nothing to protect.
+    #[test]
+    fn upper_100_ignores_sleep_and_wake() {
+        let config = band(100, 100);
+        let mock = legacy_mock(95, false);
+        let mut smc = Smc::new(mock.clone());
+        let mut control = ControlLoop::new();
+
+        for event in [PowerEvent::WillSleep, PowerEvent::DidWake] {
+            assert_eq!(
+                power(&mut control, &mut smc, &config, event),
+                Action::Sailing
+            );
+            assert!(mock.writes().is_empty(), "{event:?} wrote to the SMC");
+        }
+    }
+
+    /// An SMC failure during a power event reaches the caller, which logs it.
+    #[test]
+    fn power_event_errors_reach_the_caller() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x00]).seed(KEY_CH0C, &[0x00]);
+        let mut smc = Smc::new(mock);
+        let result = ControlLoop::new().on_power_event(
+            &mut smc,
+            &band(80, 78),
+            PowerEvent::WillSleep,
+            Instant::now(),
+        );
         assert!(matches!(result, Err(SmcError::KeyNotFound(_))));
     }
 }

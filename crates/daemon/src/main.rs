@@ -11,12 +11,14 @@ mod config;
 mod control;
 mod install;
 mod logging;
+mod power;
 mod server;
 mod state;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -151,11 +153,33 @@ fn run_daemon(cli: &Cli, allow_unprivileged: bool) -> Result<()> {
     listener.set_nonblocking(true)?;
     logging::info(format!("listening on {}", socket_path.display()));
 
+    // Sleep and wake hooks are best effort: without them the daemon still
+    // holds the band, and the missed-tick guard limits an overshoot.
+    let power = match power::spawn() {
+        Ok((hooks, events)) => {
+            logging::info("registered for sleep and wake notifications");
+            Some((hooks, events))
+        }
+        Err(err) => {
+            logging::error(format!(
+                "cannot register for power notifications: {err}; running without sleep hooks"
+            ));
+            None
+        }
+    };
+    let (power_hooks, power_events) = match power {
+        Some((hooks, events)) => (Some(hooks), Some(events)),
+        None => (None, None),
+    };
+
     let daemon = Mutex::new(Daemon::new(smc, config, &config_path));
     let serving = AtomicBool::new(true);
 
     std::thread::scope(|scope| {
         scope.spawn(|| server::serve(&listener, &daemon, &serving));
+        if let Some(events) = power_events {
+            scope.spawn(|| serve_power_events(events, &daemon));
+        }
 
         while !SHUTDOWN.load(Ordering::SeqCst) {
             daemon.lock().unwrap_or_else(|err| err.into_inner()).tick();
@@ -165,6 +189,9 @@ fn run_daemon(cli: &Cli, allow_unprivileged: bool) -> Result<()> {
     });
 
     logging::info("shutting down");
+    if let Some(hooks) = power_hooks {
+        hooks.stop();
+    }
     // Fail-safe: never leave the machine with the charge gate closed.
     daemon
         .lock()
@@ -174,6 +201,29 @@ fn run_daemon(cli: &Cli, allow_unprivileged: bool) -> Result<()> {
         logging::warn(format!("cannot remove {}: {err}", socket_path.display()));
     }
     Ok(())
+}
+
+/// Handles power events until the daemon shuts down.
+///
+/// Each notice is dropped as soon as it is handled, which acknowledges it
+/// and lets the machine go to sleep.
+fn serve_power_events<D: smc::Driver>(
+    events: std::sync::mpsc::Receiver<power::PowerNotice>,
+    daemon: &Mutex<Daemon<D>>,
+) {
+    while !SHUTDOWN.load(Ordering::SeqCst) {
+        match events.recv_timeout(SHUTDOWN_POLL) {
+            Ok(notice) => {
+                daemon
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .on_power_event(notice.event);
+                drop(notice);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 /// Sleeps one loop interval, in slices, so a signal is noticed at once.

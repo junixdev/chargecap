@@ -26,6 +26,12 @@ pub struct Config {
     pub magsafe_led: MagsafeLedMode,
     pub adapter_enabled: bool,
     pub top_up_active: bool,
+    /// Close the charge gate before sleep even below `lower`.
+    ///
+    /// Off by default: below `lower` the machine may need the charge, and
+    /// the missed-tick guard limits any overshoot after wake.
+    #[serde(default)]
+    pub inhibit_on_sleep_always: bool,
 }
 
 impl Default for Config {
@@ -36,6 +42,7 @@ impl Default for Config {
             magsafe_led: MagsafeLedMode::System,
             adapter_enabled: true,
             top_up_active: false,
+            inhibit_on_sleep_always: false,
         }
     }
 }
@@ -133,6 +140,7 @@ mod tests {
             magsafe_led: MagsafeLedMode::Reflect,
             adapter_enabled: false,
             top_up_active: true,
+            inhibit_on_sleep_always: true,
         };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);
@@ -167,6 +175,13 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, CONFIG_MODE);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_old_config_without_the_sleep_flag_still_loads() {
+        let json = r#"{"upper":80,"lower":78,"magsafe_led":"system","adapter_enabled":true,"top_up_active":false}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.inhibit_on_sleep_always);
     }
 
     #[test]

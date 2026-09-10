@@ -11,7 +11,7 @@ use proto::{ChargeControlMode, Request, Response, Status};
 use smc::{Driver, Smc};
 
 use crate::config::Config;
-use crate::control::{Action, ControlLoop};
+use crate::control::{Action, ControlLoop, PowerEvent};
 use crate::logging;
 
 /// Everything one running daemon owns.
@@ -55,6 +55,27 @@ impl<D: Driver> Daemon<D> {
                 logging::info(format!("tick: {action:?}"));
             }
             Err(err) => self.record_error(format!("tick failed: {err}")),
+        }
+    }
+
+    /// Handles one sleep or wake notification.
+    ///
+    /// Every event is logged with the battery percent and the action taken,
+    /// even a no-op: the log is the only record that the hooks are live.
+    pub fn on_power_event(&mut self, event: PowerEvent) {
+        let percent = self.read(|smc| smc.battery_percent()).unwrap_or(0);
+        let inhibited_for_sleep = self.control.resume_after_wake();
+        match self
+            .control
+            .on_power_event(&mut self.smc, &self.config, event, Instant::now())
+        {
+            Ok(action) => {
+                self.last_error = None;
+                logging::info(format!(
+                    "{event:?}: battery {percent}%, {action:?}, inhibited for sleep {inhibited_for_sleep}"
+                ));
+            }
+            Err(err) => self.record_error(format!("{event:?} failed: {err}")),
         }
     }
 
