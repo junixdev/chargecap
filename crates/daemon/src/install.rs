@@ -9,6 +9,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -22,6 +23,11 @@ pub const INSTALL_BIN_PATH: &str = "/usr/local/libexec/chargecapd";
 const BIN_MODE: u32 = 0o755;
 const PLIST_MODE: u32 = 0o644;
 const DIR_MODE: u32 = 0o755;
+/// How long `install` waits for launchd to finish unloading the old daemon
+/// and to accept the new one.
+const LAUNCHD_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long `install` waits between two tries.
+const LAUNCHD_POLL: Duration = Duration::from_millis(250);
 const ROOT_UID: u32 = 0;
 /// The `wheel` group.
 const WHEEL_GID: u32 = 0;
@@ -61,19 +67,65 @@ pub fn install() -> Result<()> {
 
     // Idempotent: drop any loaded copy before bootstrapping the new one.
     bootout();
-    let output = Command::new("launchctl")
-        .args(["bootstrap", "system"])
-        .arg(plist_path)
-        .output()
-        .context("cannot run launchctl bootstrap")?;
-    if !output.status.success() {
-        bail!(
-            "launchctl bootstrap failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    bootstrap(plist_path)?;
     logging::info(format!("bootstrapped {}", proto::DAEMON_LABEL));
     Ok(())
+}
+
+/// Bootstraps `plist_path` into the system domain, retrying while launchd
+/// refuses.
+///
+/// WARNING: `launchctl bootout` returns before launchd has finished
+/// unloading the daemon, and a `bootstrap` in that window fails with
+/// "Bootstrap failed: 5: Input/output error". Retrying until
+/// [`LAUNCHD_TIMEOUT`] rides out the unload instead of leaving the machine
+/// with no daemon at all.
+fn bootstrap(plist_path: &Path) -> Result<()> {
+    let plist_path = plist_path.to_path_buf();
+    let mut tries = 0;
+    let result = retry_until(LAUNCHD_TIMEOUT, LAUNCHD_POLL, || {
+        tries += 1;
+        let output = Command::new("launchctl")
+            .args(["bootstrap", "system"])
+            .arg(&plist_path)
+            .output()
+            .map_err(|err| format!("cannot run launchctl bootstrap: {err}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    });
+    match result {
+        Ok(()) => {
+            if tries > 1 {
+                logging::info(format!("launchctl bootstrap succeeded on try {tries}"));
+            }
+            Ok(())
+        }
+        Err(message) => bail!("launchctl bootstrap failed after {tries} tries: {message}"),
+    }
+}
+
+/// Runs `attempt` until it succeeds or `timeout` passes, pausing `poll`
+/// between tries. `attempt` always runs at least once.
+///
+/// Returns the last failure message when every try failed.
+fn retry_until<F>(timeout: Duration, poll: Duration, mut attempt: F) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(message) => {
+                if Instant::now() + poll >= deadline {
+                    return Err(message);
+                }
+                std::thread::sleep(poll);
+            }
+        }
+    }
 }
 
 /// Removes the LaunchDaemon and leaves charging enabled.
@@ -240,6 +292,44 @@ mod tests {
         ] {
             assert!(text.contains(needle), "plist is missing {needle}");
         }
+    }
+
+    /// Regression: `launchctl bootout` returns before launchd has finished
+    /// unloading, so the bootstrap that follows failed with
+    /// "Bootstrap failed: 5: Input/output error" and left no daemon.
+    #[test]
+    fn retry_until_rides_out_a_few_failures() {
+        let mut calls = 0;
+        let result = retry_until(Duration::from_secs(5), Duration::from_millis(1), || {
+            calls += 1;
+            if calls < 3 {
+                Err("Bootstrap failed: 5: Input/output error".to_string())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn retry_until_runs_once_and_reports_the_last_failure() {
+        let mut calls = 0;
+        let result = retry_until(Duration::from_millis(30), Duration::from_millis(10), || {
+            calls += 1;
+            Err(format!("try {calls} failed"))
+        });
+        assert_eq!(result, Err(format!("try {calls} failed")));
+        assert!(calls >= 1, "the attempt must run at least once");
+
+        // A timeout below the poll interval still runs the attempt once.
+        let mut once = 0;
+        let result = retry_until(Duration::ZERO, Duration::from_secs(60), || {
+            once += 1;
+            Err("no".to_string())
+        });
+        assert_eq!(result, Err("no".to_string()));
+        assert_eq!(once, 1);
     }
 
     #[test]

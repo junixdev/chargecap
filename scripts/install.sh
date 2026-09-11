@@ -34,6 +34,19 @@ run() {
   fi
 }
 
+# WARNING: the script quits a running chargecap before it installs. If a
+# later step fails, put the menu-bar app back, so a failed install never
+# leaves the Mac with neither the app nor the daemon.
+on_error() {
+  echo "error: install failed." >&2
+  if [ "$DRY_RUN" -eq 0 ] && [ -d "$DEST" ]; then
+    echo "Relaunching $DEST so you keep the menu; it will report the daemon as not running." >&2
+    open "$DEST" || true
+  fi
+  echo "The daemon log is at /Library/Logs/chargecap/daemon.log." >&2
+}
+trap on_error ERR
+
 if [ "$BUILD" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '+ %s\n' "$HERE/bundle.sh"
