@@ -93,7 +93,7 @@ impl Driver for MockDriver {
         let mut state = self.state.borrow_mut();
         let Some((data_type, value)) = state.keys.get(&input.key).cloned() else {
             output.result = SMC_KEY_NOT_FOUND;
-            check_result(&output)?;
+            check_result(input.key, &output)?;
             unreachable!("check_result rejects a nonzero result");
         };
 
@@ -120,7 +120,7 @@ impl Driver for MockDriver {
             }
             other => {
                 output.result = other;
-                check_result(&output)?;
+                check_result(input.key, &output)?;
             }
         }
         Ok(output)

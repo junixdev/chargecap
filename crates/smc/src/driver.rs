@@ -91,8 +91,16 @@ pub fn fourcc_str(key: u32) -> String {
 }
 
 /// Turns a nonzero `result` field into a typed error.
-pub fn check_result(output: &SmcKeyData) -> Result<(), SmcError> {
-    let key = fourcc_str(output.key);
+///
+/// `requested` is the key the caller asked for. The SMC leaves the key
+/// field of the reply at zero when it refuses a call, so without the
+/// fallback the message read "SMC key  not found on this Mac".
+pub fn check_result(requested: u32, output: &SmcKeyData) -> Result<(), SmcError> {
+    let key = fourcc_str(if output.key == 0 {
+        requested
+    } else {
+        output.key
+    });
     match output.result {
         0 => Ok(()),
         SMC_KEY_NOT_FOUND => Err(SmcError::KeyNotFound(key)),
@@ -231,7 +239,7 @@ impl Driver for IoKitDriver {
             K_IO_RETURN_NOT_PRIVILEGED => return Err(SmcError::NotPrivileged),
             other => return Err(SmcError::Io(other)),
         }
-        check_result(&output)?;
+        check_result(input.key, &output)?;
         Ok(output)
     }
 }
@@ -241,5 +249,48 @@ impl Drop for IoKitDriver {
         // SAFETY: `self.conn` was opened in `open`, is closed once, and is
         // not used afterwards.
         unsafe { IOServiceClose(self.conn) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(result: u8, key: u32) -> SmcKeyData {
+        SmcKeyData {
+            key,
+            result,
+            ..SmcKeyData::default()
+        }
+    }
+
+    /// Regression: `smcctl read CH0B` on a Mac without the key reported
+    /// "SMC key  not found on this Mac", with the name missing, because the
+    /// SMC leaves the key field of a refused reply at zero.
+    #[test]
+    fn check_result_names_the_requested_key_when_the_reply_omits_it() {
+        let requested = fourcc("CH0B").unwrap();
+        let error = check_result(requested, &reply(SMC_KEY_NOT_FOUND, 0)).unwrap_err();
+        assert_eq!(error, SmcError::KeyNotFound("CH0B".to_string()));
+        assert_eq!(error.to_string(), "SMC key CH0B not found on this Mac");
+    }
+
+    #[test]
+    fn check_result_prefers_the_key_the_reply_carries() {
+        let requested = fourcc("CH0B").unwrap();
+        let echoed = fourcc("CH0C").unwrap();
+        let error = check_result(requested, &reply(0x85, echoed)).unwrap_err();
+        assert_eq!(
+            error,
+            SmcError::Smc {
+                key: "CH0C".to_string(),
+                result: 0x85
+            }
+        );
+    }
+
+    #[test]
+    fn check_result_accepts_a_zero_result() {
+        assert_eq!(check_result(fourcc("BUIC").unwrap(), &reply(0, 0)), Ok(()));
     }
 }
