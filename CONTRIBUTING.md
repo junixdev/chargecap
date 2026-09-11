@@ -117,10 +117,24 @@ Run `probe` first. It names the gate this Mac uses.
 
 `docs/VERIFICATION.md` records one end-to-end run on a real Mac.
 
-## Send a change
+## Who can send a pull request
+
+Anyone can open an issue. Bug reports, feature ideas, and questions are
+welcome at any time.
+
+Pull requests are limited to approved contributors while the project is
+young. At the moment the only approved contributor is the maintainer,
+[@junixdev](https://github.com/junixdev). A workflow closes pull requests
+from other accounts automatically and leaves a note.
+
+If you want to contribute code, open an issue that describes the change
+first. The maintainer can then add you to the allowlist in
+`.github/workflows/pr-gate.yml`.
+
+## Send a change (approved contributors)
 
 1. Open an issue first for large changes, so we can agree on the approach.
-2. Fork the repo and create a branch from `main`.
+2. Create a branch from `main`.
 3. Keep commits small. Use the `type(scope): summary` format, for example
    `fix(daemon): restore the band as soon as a top-up is cancelled`.
 4. Add or update tests for behavior changes.
@@ -131,6 +145,9 @@ Run `probe` first. It names the gate this Mac uses.
    version you tested on.
 
 ## Release
+
+`main` is protected. Force pushes and deletion are blocked, and the CI
+`test` job must pass before a pull request can merge.
 
 Maintainers cut a release by pushing a tag:
 

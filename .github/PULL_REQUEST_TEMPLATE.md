@@ -1,3 +1,5 @@
+<!-- Pull requests are limited to approved contributors. See CONTRIBUTING.md. -->
+
 ## Summary
 
 <!-- Describe the change. -->
