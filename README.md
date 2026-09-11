@@ -1,5 +1,4 @@
 <p align="center">
-  <!-- TODO: replace with the real app icon (256×256 PNG) -->
   <img src="docs/images/icon.png" alt="chargecap icon" width="128" height="128">
 </p>
 
@@ -20,7 +19,6 @@
 </p>
 
 <p align="center">
-  <!-- TODO: screenshot of the open menu, roughly 600px wide -->
   <img src="docs/images/menu.png" alt="The chargecap menu open in the macOS menu bar" width="480">
 </p>
 
@@ -74,9 +72,6 @@ and double-click it to unzip. You will get `chargecap.app`.
 
 Drag `chargecap.app` into your **Applications** folder.
 
-<!-- TODO: screenshot or short GIF of dragging the app into Applications -->
-<p align="center"><img src="docs/images/install-drag.png" alt="Dragging chargecap.app into the Applications folder" width="480"></p>
-
 ### 3. Set up the background helper (one time)
 
 Charging is controlled by a chip inside your Mac that only an administrator
@@ -91,8 +86,7 @@ appears as you type, which is normal.
 sudo /Applications/chargecap.app/Contents/MacOS/chargecapd install
 ```
 
-<!-- TODO: screenshot of Terminal showing the install command and its output -->
-<p align="center"><img src="docs/images/install-terminal.png" alt="Terminal after running the helper install command" width="600"></p>
+<p align="center"><img src="docs/images/install-terminal.png" alt="Terminal asking for your password after the helper install command" width="600"></p>
 
 ### 4. Open chargecap
 
@@ -103,11 +97,11 @@ its developer and not by Apple. That is expected. To open it anyway:
 1. **Right-click** (or Control-click) `chargecap.app` and choose **Open**.
 2. Click **Open** again in the dialog.
 
-If macOS still refuses, go to **System Settings → Privacy & Security**,
-scroll down, and click **Open Anyway** next to chargecap.
+If macOS still refuses, go to **System Settings → Privacy & Security** and
+scroll down to the **Security** section. An **Open Anyway** button appears
+there, just under "Allow applications from". Click it.
 
-<!-- TODO: screenshot of the Privacy & Security "Open Anyway" button -->
-<p align="center"><img src="docs/images/open-anyway.png" alt="The Open Anyway button in Privacy & Security settings" width="480"></p>
+<p align="center"><img src="docs/images/open-anyway.png" alt="The Security section of Privacy & Security settings, where Open Anyway appears" width="480"></p>
 
 A battery percentage appears in your menu bar. You are done!
 
@@ -118,8 +112,7 @@ A battery percentage appears in your menu bar. You are done!
 
 Click the percentage in your menu bar to open the menu.
 
-<!-- TODO: annotated screenshot of the menu with numbered callouts -->
-<p align="center"><img src="docs/images/menu-annotated.png" alt="The chargecap menu with each item labelled" width="480"></p>
+<p align="center"><img src="docs/images/menu.png" alt="The chargecap menu" width="480"></p>
 
 | Menu item | What it does |
 |---|---|

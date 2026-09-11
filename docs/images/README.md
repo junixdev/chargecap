@@ -1,14 +1,11 @@
 # Images for the README
 
-Add these files here. `README.md` links to them.
-
-| File | Content | Size |
+| File | Content | How it was made |
 |---|---|---|
-| `icon.png` | The app icon | 256×256 |
-| `menu.png` | The open menu in the menu bar | about 600 px wide |
-| `menu-annotated.png` | The open menu with numbered labels for each item | about 600 px wide |
-| `install-drag.png` | Dragging `chargecap.app` into Applications | about 600 px wide |
-| `install-terminal.png` | Terminal after the helper install command | about 800 px wide |
-| `open-anyway.png` | The "Open Anyway" button in Privacy & Security | about 600 px wide |
+| `icon.png` | The app icon, 256×256, transparent corners | Drawn with CoreGraphics from the shapes in `scripts/make-icon.sh` |
+| `menu.png` | The open menu in the menu bar | Manual screenshot |
+| `install-terminal.png` | Terminal asking for the password after the helper install command | `grip shot --window <id>` |
+| `open-anyway.png` | The Security section of Privacy & Security, cropped | `grip shot --app "System Settings"`, then `sips -c` to crop off the sidebar |
 
-Use `grip` or `⌘ Shift 4` to capture. Trim window shadows.
+To retake a window shot, run `grip windows` to find the window id, then
+`grip shot --window <id> -o docs/images/<name>.png`.
