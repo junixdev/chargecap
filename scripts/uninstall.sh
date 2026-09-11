@@ -22,7 +22,7 @@ done
 APP="/Applications/chargecap.app"
 # Where crates/daemon/src/install.rs copies itself; not on PATH by default.
 DAEMON_BIN="/usr/local/libexec/chargecapd"
-AGENT_LABEL="com.rymera.chargecap.app"
+AGENT_LABEL="io.github.junixdev.chargecap.app"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 APP_SUPPORT="$HOME/Library/Application Support/chargecap"
 SYSTEM_APP_SUPPORT="/Library/Application Support/chargecap"

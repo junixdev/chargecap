@@ -1,6 +1,6 @@
 # chargecap hardware verification
 
-One end-to-end pass of `chargecap` on a real Mac. Every step of the card's
+One end-to-end pass of `chargecap` on a real Mac. Every step of the
 test plan has a recorded result. The seams it found are fixed, each with a
 regression test and its own commit.
 
@@ -37,7 +37,7 @@ CHIE  present  size  1  type hex_
 ```
 
 This Mac has neither `CH0B` nor `CH0C`. It uses `CHTE`, where `00000000`
-allows charging and a nonzero value inhibits it. The card's `CH0B` checks do
+allows charging and a nonzero value inhibits it. The test plan's `CH0B` checks do
 not apply here, so every gate reading below is `CHTE`.
 
 `bfD0` is present alone, so `compute_mode` correctly reports `legacy`:
@@ -71,7 +71,7 @@ which needs a real `AppleSMC` service.
 | 10 | Discharge | **PASS** | see below |
 | 11 | Uninstall | **PASS** | see below |
 
-All five steps the card requires to pass (1, 2, 3, 5, 11) pass.
+All five steps the test plan requires to pass (1, 2, 3, 5, 11) pass.
 
 ### 1. Install — PASS
 
@@ -81,18 +81,18 @@ neither the daemon nor the menu-bar app. After the fix:
 
 ```
 [2026-09-11T00:27:31Z] INFO installed binary at /usr/local/libexec/chargecapd
-[2026-09-11T00:27:31Z] INFO wrote plist at /Library/LaunchDaemons/com.rymera.chargecap.plist
-[2026-09-11T00:27:31Z] INFO booted out system/com.rymera.chargecap
+[2026-09-11T00:27:31Z] INFO wrote plist at /Library/LaunchDaemons/io.github.junixdev.chargecap.plist
+[2026-09-11T00:27:31Z] INFO booted out system/io.github.junixdev.chargecap
 [2026-09-11T00:27:32Z] INFO launchctl bootstrap succeeded on try 3
-[2026-09-11T00:27:32Z] INFO bootstrapped com.rymera.chargecap
+[2026-09-11T00:27:32Z] INFO bootstrapped io.github.junixdev.chargecap
 ```
 
 Three tries were needed, so the retry was not optional.
 
 ```
-system/com.rymera.chargecap = {
+system/io.github.junixdev.chargecap = {
         active count = 1
-        path = /Library/LaunchDaemons/com.rymera.chargecap.plist
+        path = /Library/LaunchDaemons/io.github.junixdev.chargecap.plist
         type = LaunchDaemon
         state = running
 ```
@@ -185,7 +185,7 @@ machine with the limit live logged the same pair.
 ### 7. Daemon restart — PASS
 
 ```
-sudo launchctl kickstart -k system/com.rymera.chargecap
+sudo launchctl kickstart -k system/io.github.junixdev.chargecap
 ```
 
 ```
@@ -209,7 +209,7 @@ in or out, so the step proved nothing about unplugging. A corrected script
 exists but the operator skipped it and reported the behaviour as working
 from their own manual testing.
 
-Not one of the five steps the card requires to pass. See
+Not one of the five steps the test plan requires to pass. See
 [Open issues](#open-issues).
 
 ### 9. Top up — PASS
@@ -223,7 +223,7 @@ Not one of the five steps the card requires to pass. See
 
 With the limit at 83 and the battery at 95, the top-up opened the gate on
 the same request. Title: `95% up arrow 100`. Cancelling closed it again, but
-10.0 s later, exactly on the tolerance the card allows. That is
+10.0 s later, exactly on the tolerance the test plan allows. That is
 [Seam 6](#seam-6--cancelling-a-top-up-waited-a-full-tick), now fixed.
 
 ### 10. Discharge — PASS
@@ -246,9 +246,9 @@ adapter:
 
 ```
 [2026-09-11T01:02:06Z] INFO asked the running daemon to allow charging
-[2026-09-11T01:02:06Z] INFO booted out system/com.rymera.chargecap
+[2026-09-11T01:02:06Z] INFO booted out system/io.github.junixdev.chargecap
 [2026-09-11T01:02:06Z] INFO charge control reset: charging allowed
-[2026-09-11T01:02:06Z] INFO removed /Library/LaunchDaemons/com.rymera.chargecap.plist
+[2026-09-11T01:02:06Z] INFO removed /Library/LaunchDaemons/io.github.junixdev.chargecap.plist
 [2026-09-11T01:02:06Z] INFO removed /usr/local/libexec/chargecapd
 [2026-09-11T01:02:06Z] INFO removed /var/run/chargecap.sock
 [2026-09-11T01:02:06Z] INFO kept the config at /Library/Application Support/chargecap/config.json
@@ -257,9 +257,9 @@ adapter:
 Afterwards:
 
 ```
-Could not find service "com.rymera.chargecap" in domain for system
+Could not find service "io.github.junixdev.chargecap" in domain for system
 ls: /Applications/chargecap.app: No such file or directory
-ls: /Library/LaunchDaemons/com.rymera.chargecap.plist: No such file or directory
+ls: /Library/LaunchDaemons/io.github.junixdev.chargecap.plist: No such file or directory
 ls: /usr/local/libexec/chargecapd: No such file or directory
 ls: /var/run/chargecap.sock: No such file or directory
 no chargecap process (correct)
@@ -273,7 +273,7 @@ gone. Both saved settings survived, which is
 
 ```
 /Library/Application Support/chargecap/config.json        (root, 151 bytes)
-/Users/junix/Library/Application Support/chargecap/app.json  (junix, 22 bytes)
+~/Library/Application Support/chargecap/app.json  (junix, 22 bytes)
 ```
 
 The reinstall that followed bootstrapped on the first try, because nothing
@@ -320,7 +320,7 @@ which fails against the old code.
 `56205ec`. This is the one that broke step 1.
 
 ```
-[2026-09-11T00:24:11Z] INFO booted out system/com.rymera.chargecap
+[2026-09-11T00:24:11Z] INFO booted out system/io.github.junixdev.chargecap
 chargecapd: launchctl bootstrap failed: Bootstrap failed: 5: Input/output error
 ```
 
@@ -368,7 +368,7 @@ what each mode removes, and CI runs it.
 
 `f751395`. `CancelTopUp` only cleared the flag, so the gate stayed open
 until the next tick. Step 9 measured the gate closing exactly 10.0 s after
-the cancel, right on the tolerance the card allows. `SetLimit` and `TopUp`
+the cancel, right on the tolerance the test plan allows. `SetLimit` and `TopUp`
 already re-tick on the request; `CancelTopUp` now does the same. Test:
 `state::tests::cancelling_a_top_up_restores_the_band_at_once`.
 
@@ -428,7 +428,7 @@ The tool is installed and running with the limit at 80%.
 ```
 
 ```
-system/com.rymera.chargecap = { ... state = running }
+system/io.github.junixdev.chargecap = { ... state = running }
  -InternalBattery-0 (id=6684771)  95%; AC attached; not charging present: true
 CHTE: 01 00 00 00
 ```

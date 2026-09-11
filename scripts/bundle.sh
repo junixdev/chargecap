@@ -38,7 +38,7 @@ cat >"$CONTENTS/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.rymera.chargecap.app</string>
+	<string>io.github.junixdev.chargecap.app</string>
 	<key>CFBundleName</key>
 	<string>chargecap</string>
 	<key>CFBundleExecutable</key>

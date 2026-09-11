@@ -3,8 +3,10 @@ name = "proto"
 version = "0.1.0"
 edition = "2021"
 description = "Wire contract and file paths shared by chargecapd and chargecap"
-authors = ["Rymera"]
-# Internal tool — never publish to crates.io.
+authors = ["Junix Villacorta"]
+license = "MIT"
+repository = "https://github.com/junixdev/chargecap"
+# Workspace member with a generic crate name; not meant for crates.io.
 publish = false
 
 [dependencies]

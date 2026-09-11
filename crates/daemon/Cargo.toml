@@ -3,8 +3,10 @@ name = "daemon"
 version = "0.1.0"
 edition = "2021"
 description = "Root daemon that talks to the SMC and serves the chargecap socket"
-authors = ["Rymera"]
-# Internal tool — never publish to crates.io.
+authors = ["Junix Villacorta"]
+license = "MIT"
+repository = "https://github.com/junixdev/chargecap"
+# Workspace member with a generic crate name; not meant for crates.io.
 publish = false
 
 [[bin]]

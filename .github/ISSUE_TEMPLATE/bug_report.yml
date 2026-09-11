@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a problem with chargecap or chargecapd.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps that show the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: Describe what you expected to happen.
+    validations:
+      required: false
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+      description: For example, "MacBook Pro 14-inch, M3 Pro".
+      placeholder: MacBook Pro 14-inch, M3 Pro
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "15.1"
+    validations:
+      required: true
+  - type: input
+    id: chargecap-version
+    attributes:
+      label: chargecap version
+      description: >-
+        Click the menu-bar icon, or run
+        `/usr/local/libexec/chargecapd --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: daemon-status
+    attributes:
+      label: Daemon status
+      description: >-
+        Output of `sudo /usr/local/libexec/chargecapd status --json`.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: log-lines
+    attributes:
+      label: Daemon log
+      description: >-
+        Relevant lines from `/Library/Logs/chargecap/daemon.log`.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked existing issues
+          required: true
+        - label: I am on an Apple Silicon Mac
+          required: true

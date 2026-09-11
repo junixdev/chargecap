@@ -8,9 +8,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOCKET_PATH: &str = "/var/run/chargecap.sock";
 pub const CONFIG_PATH: &str = "/Library/Application Support/chargecap/config.json";
 pub const LOG_PATH: &str = "/Library/Logs/chargecap/daemon.log";
-pub const DAEMON_LABEL: &str = "com.rymera.chargecap";
-pub const DAEMON_PLIST_PATH: &str = "/Library/LaunchDaemons/com.rymera.chargecap.plist";
-pub const APP_LABEL: &str = "com.rymera.chargecap.app"; // LaunchAgent for launch-at-login
+pub const DAEMON_LABEL: &str = "io.github.junixdev.chargecap";
+pub const DAEMON_PLIST_PATH: &str = "/Library/LaunchDaemons/io.github.junixdev.chargecap.plist";
+pub const APP_LABEL: &str = "io.github.junixdev.chargecap.app"; // LaunchAgent for launch-at-login
 pub const DEFAULT_UPPER: u8 = 80;
 pub const DEFAULT_GAP: u8 = 2; // lower = upper - DEFAULT_GAP
 pub const MIN_UPPER: u8 = 50;
