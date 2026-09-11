@@ -19,3 +19,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: bundle the app
+        run: scripts/bundle.sh
+      - name: dry-run the installer
+        run: scripts/install.sh --dry-run
