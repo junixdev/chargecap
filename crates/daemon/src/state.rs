@@ -214,6 +214,10 @@ impl<D: Driver> Daemon<D> {
                 self.config.top_up_active = false;
                 self.save_config();
                 logging::info("top-up cancelled");
+                // The band comes back at once, as it goes away at once on
+                // TopUp. Waiting for the next tick left the gate open for a
+                // full LOOP_INTERVAL after the user cancelled.
+                self.tick();
             }
         }
         Response::ok(self.status())
@@ -422,6 +426,39 @@ mod tests {
         let status = daemon.apply(Request::CancelTopUp).status.unwrap();
         assert!(!status.top_up_active);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Regression: cancelling a top-up only cleared the flag, so the band
+    /// came back on the next tick, a full loop interval later.
+    #[test]
+    fn cancelling_a_top_up_restores_the_band_at_once() {
+        let mock = MockDriver::new();
+        mock.seed(KEY_CH0B, &[0x02])
+            .seed(KEY_CH0C, &[0x02])
+            .seed(KEY_BUIC, &[95])
+            .seed(KEY_ACW, &[0x01]);
+        let mut daemon = Daemon::new(Smc::new(mock.clone()), Config::default(), "/dev/null");
+
+        // The top-up opens the gate although 95% is above the 80% limit.
+        assert!(daemon.apply(Request::TopUp).ok);
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x00]),
+                (KEY_CH0C.to_string(), vec![0x00]),
+            ]
+        );
+
+        // Cancelling closes it again on the same request, not on a later tick.
+        mock.clear_writes();
+        assert!(daemon.apply(Request::CancelTopUp).ok);
+        assert_eq!(
+            mock.writes(),
+            vec![
+                (KEY_CH0B.to_string(), vec![0x02]),
+                (KEY_CH0C.to_string(), vec![0x02]),
+            ]
+        );
     }
 
     #[test]
