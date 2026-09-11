@@ -47,7 +47,8 @@ click tells chargecap to fill up to 100% just this once.
 - **MagSafe light control.** Keep the system behaviour, switch the light off, or make it show real charging state.
 - **Launch at login.** Set it once and forget it.
 - **Survives sleep and restarts.** The limit is enforced by a small background helper, not just the menu.
-- **Light and native.** Written in Rust, no Electron, no accounts, no network access, no telemetry.
+- **Updates itself.** Checks GitHub once a day and installs a new version in one click. You can turn the check off.
+- **Light and native.** Written in Rust, no Electron, no accounts, no telemetry.
 
 ## Requirements
 
@@ -64,13 +65,14 @@ click tells chargecap to fill up to 100% just this once.
 
 ### 1. Download
 
-Grab the latest `chargecap-…-apple-silicon.zip` from the
-[**Releases page**](https://github.com/junixdev/chargecap/releases/latest)
-and double-click it to unzip. You will get `chargecap.app`.
+Grab the latest `chargecap-…-apple-silicon.dmg` from the
+[**Releases page**](https://github.com/junixdev/chargecap/releases/latest).
 
 ### 2. Move it to Applications
 
-Drag `chargecap.app` into your **Applications** folder.
+Double-click the downloaded file. A window opens with the chargecap icon and
+an **Applications** folder next to it. Drag chargecap onto Applications.
+Then eject the disk image from the Finder sidebar.
 
 ### 3. Set up the background helper (one time)
 
@@ -125,6 +127,8 @@ Click the percentage in your menu bar to open the menu.
 | **MagSafe LED** | **System** keeps Apple's behaviour. **Off** turns the light off. **Reflect charging** shows amber while charging and green when holding. |
 | **Launch at login** | Starts chargecap automatically when you log in. |
 | **Open log** | Opens the helper's log file, useful if something looks wrong. |
+| **Check for updates…** | Asks GitHub for a newer version right now. When one is already known, the row reads **Update to x.y.z…** and installs it. |
+| **Check for updates automatically** | Untick to stop the daily check. |
 | **Quit** | Closes the menu-bar app. The limit keeps working in the background. |
 
 ### What the menu-bar icon means
@@ -138,6 +142,24 @@ Click the percentage in your menu bar to open the menu.
 | `93% ∞` | Limit is off, charging normally |
 | `64%` | Running on battery |
 | `⚠︎` | The background helper is not running (see below) |
+
+## Updates
+
+chargecap checks GitHub for a new version once a day, and whenever you pick
+**Check for updates…** from the menu. When a newer version exists, the menu
+shows **Update to x.y.z…**. Click it and confirm. chargecap then:
+
+1. downloads the new disk image,
+2. replaces the app in your Applications folder,
+3. asks for your password once, to update the background helper,
+4. restarts itself.
+
+The check sends one request to GitHub with the app version and nothing else.
+Untick **Check for updates automatically** to turn it off. You can still
+check by hand from the menu.
+
+If you run a beta, you are offered newer betas. If you run a normal release,
+you only see normal releases.
 
 ## Uninstall
 
@@ -185,6 +207,7 @@ as part of removing the helper.
 | Helper log | `/Library/Logs/chargecap/daemon.log` |
 | Saved limit | `/Library/Application Support/chargecap/config.json` |
 | App settings | `~/Library/Application Support/chargecap/app.json` |
+| Downloaded updates | `~/Library/Caches/chargecap` |
 
 Still stuck? Please [open an issue](https://github.com/junixdev/chargecap/issues/new/choose).
 Include your Mac model and macOS version, and we will help you sort it out.
@@ -200,7 +223,8 @@ battery is allowed to charge. chargecap has two parts:
   rights, which is why install asks for your password once.
 
 The app and the helper talk to each other over a private local connection.
-No data ever leaves your Mac.
+The only thing that leaves your Mac is the daily update check to GitHub, and
+you can turn that off.
 
 Curious about the details, or want to contribute? Head over to
 [CONTRIBUTING.md](CONTRIBUTING.md). A real-hardware test run is written up

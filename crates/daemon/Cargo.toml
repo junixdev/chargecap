@@ -1,6 +1,6 @@
 [package]
 name = "daemon"
-version = "0.1.0"
+version = "0.1.0-beta.2"
 edition = "2021"
 description = "Root daemon that talks to the SMC and serves the chargecap socket"
 authors = ["Junix Villacorta"]

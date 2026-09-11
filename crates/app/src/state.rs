@@ -1,4 +1,5 @@
-//! Small on-disk state for the app: the last limit the user picked.
+//! Small on-disk state for the app: the last limit the user picked and the
+//! update-check settings.
 //!
 //! Kept in `~/Library/Application Support/chargecap/app.json`, so turning the
 //! limit off and on again restores the same percentage.
@@ -13,15 +14,22 @@ pub const STATE_ENV: &str = "CHARGECAP_APP_STATE";
 
 /// Persisted app state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppState {
     /// The last limit below 100 the user chose.
     pub last_upper: u8,
+    /// Whether the app asks GitHub for a newer release once a day.
+    pub check_updates: bool,
+    /// Unix time of the last automatic update check, in seconds.
+    pub last_update_check: u64,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             last_upper: proto::DEFAULT_UPPER,
+            check_updates: true,
+            last_update_check: 0,
         }
     }
 }
@@ -79,9 +87,26 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = temp_dir("state-round-trip");
         let path = dir.join("app.json");
-        let state = AppState { last_upper: 65 };
+        let state = AppState {
+            last_upper: 65,
+            check_updates: false,
+            last_update_check: 1_700_000_000,
+        };
         save(&path, &state).unwrap();
         assert_eq!(load(&path), state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_fills_in_fields_an_older_file_does_not_have() {
+        let dir = temp_dir("state-older");
+        let path = dir.join("app.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"last_upper": 70}"#).unwrap();
+        let state = load(&path);
+        assert_eq!(state.last_upper, 70);
+        assert!(state.check_updates);
+        assert_eq!(state.last_update_check, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

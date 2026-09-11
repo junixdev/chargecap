@@ -20,23 +20,23 @@ jobs:
       - name: Build the app bundle
         run: scripts/bundle.sh
 
-      - name: Zip the app bundle
+      - name: Build the disk image
         run: |
-          ditto -c -k --keepParent target/bundle/chargecap.app \
-            "chargecap-${GITHUB_REF_NAME}-apple-silicon.zip"
+          scripts/make-dmg.sh "chargecap-${GITHUB_REF_NAME}-apple-silicon.dmg"
 
       - name: Compute checksum
         run: |
-          shasum -a 256 "chargecap-${GITHUB_REF_NAME}-apple-silicon.zip" \
-            > "chargecap-${GITHUB_REF_NAME}-apple-silicon.zip.sha256"
+          shasum -a 256 "chargecap-${GITHUB_REF_NAME}-apple-silicon.dmg" \
+            > "chargecap-${GITHUB_REF_NAME}-apple-silicon.dmg.sha256"
 
       # The bundle is ad-hoc signed, not notarized. On first launch, users
-      # must right-click the app and choose Open, then confirm the prompt.
+      # must allow the app under System Settings > Privacy & Security. The
+      # app's updater looks for the .dmg asset, so keep that extension.
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            chargecap-${{ github.ref_name }}-apple-silicon.zip
-            chargecap-${{ github.ref_name }}-apple-silicon.zip.sha256
+            chargecap-${{ github.ref_name }}-apple-silicon.dmg
+            chargecap-${{ github.ref_name }}-apple-silicon.dmg.sha256

@@ -1,4 +1,5 @@
-//! AppKit alerts: the "Custom…" input and the error box.
+//! AppKit alerts: the "Custom…" input, the error box, a confirm box and a
+//! plain notice.
 //!
 //! Both calls are modal and must run on the main thread. Every entry point
 //! takes a [`MainThreadMarker`], which the event loop already holds.
@@ -47,6 +48,27 @@ pub fn error(mtm: MainThreadMarker, message: &str) {
     alert.setInformativeText(&NSString::from_str(message));
     alert.addButtonWithTitle(&NSString::from_str("OK"));
     alert.runModal();
+}
+
+/// Shows a message with one "OK" button.
+pub fn notice(mtm: MainThreadMarker, title: &str, message: &str) {
+    let alert = NSAlert::new(mtm);
+    alert.setAlertStyle(NSAlertStyle::Informational);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(message));
+    alert.addButtonWithTitle(&NSString::from_str("OK"));
+    alert.runModal();
+}
+
+/// Asks a yes/no question. Returns true when the user picks `yes_label`.
+pub fn confirm(mtm: MainThreadMarker, title: &str, message: &str, yes_label: &str) -> bool {
+    let alert = NSAlert::new(mtm);
+    alert.setAlertStyle(NSAlertStyle::Informational);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(message));
+    alert.addButtonWithTitle(&NSString::from_str(yes_label));
+    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    alert.runModal() == NSAlertFirstButtonReturn
 }
 
 fn text_field(mtm: MainThreadMarker, value: &str) -> Retained<NSTextField> {

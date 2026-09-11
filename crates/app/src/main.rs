@@ -2,19 +2,19 @@
 //!
 //! A status-bar item shows the battery percent and the charge state. Its menu
 //! picks the limit, turns the limit off and on, toggles launch at login,
-//! opens the daemon log and quits. Every command goes to `chargecapd` over
-//! the Unix socket; this binary never touches the SMC.
+//! checks for updates, opens the daemon log and quits. Every command goes to
+//! `chargecapd` over the Unix socket; this binary never touches the SMC.
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use objc2::MainThreadMarker;
 use proto::{MagsafeLedMode, Status};
 use tao::event::Event;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
@@ -22,6 +22,7 @@ use tray_icon::menu::{
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 use app::state::AppState;
+use app::update::{self, Release, Version};
 use app::{client, dialog, launch_agent, state, ui};
 
 /// How often the worker thread asks the daemon for its status.
@@ -36,6 +37,8 @@ const ID_DISCHARGE: &str = "discharge";
 const ID_TOP_UP: &str = "top_up";
 const ID_LOGIN: &str = "login";
 const ID_LOG: &str = "log";
+const ID_UPDATE: &str = "update";
+const ID_AUTO_UPDATE: &str = "auto_update";
 const ID_QUIT: &str = "quit";
 
 /// What the event loop reacts to.
@@ -44,6 +47,21 @@ enum UserEvent {
     Status(Box<Result<Status, String>>),
     /// A menu row was clicked.
     Menu(MenuEvent),
+    /// An update check finished. `manual` is true when the user asked for it.
+    UpdateCheck {
+        result: Result<Option<Release>, String>,
+        manual: bool,
+    },
+    /// The download-and-install flow finished.
+    UpdateDone(Result<(), String>),
+}
+
+/// What the update row shows.
+enum UpdateRow<'a> {
+    Idle,
+    Checking,
+    Available(&'a Version),
+    Installing(&'a Version),
 }
 
 fn main() -> Result<()> {
@@ -61,12 +79,20 @@ fn main() -> Result<()> {
     let plist_path = launch_agent::plist_path();
     let binary = std::env::current_exe()?;
 
-    let mut ui = Ui::build(launch_agent::is_enabled(&plist_path))?;
+    let mut app_state = state::load(&state_path);
+    let mut ui = Ui::build(
+        launch_agent::is_enabled(&plist_path),
+        app_state.check_updates,
+    )?;
     ui.apply(None);
 
     let refresh = spawn_poller(&event_loop, socket.clone());
-    let mut app_state = state::load(&state_path);
+    let proxy = event_loop.create_proxy();
+    let current = Version::parse(update::CURRENT).expect("the crate version is semver");
     let mut latest: Option<Status> = None;
+    let mut available: Option<Release> = None;
+    let mut checking = false;
+    let mut installing = false;
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -74,6 +100,71 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::Status(result)) => {
                 latest = (*result).ok();
                 ui.apply(latest.as_ref());
+                if app_state.check_updates
+                    && !checking
+                    && !installing
+                    && available.is_none()
+                    && now_secs() >= app_state.last_update_check + update::CHECK_INTERVAL.as_secs()
+                {
+                    app_state.last_update_check = now_secs();
+                    save_state(&state_path, &app_state);
+                    checking = true;
+                    ui.set_update(UpdateRow::Checking);
+                    spawn_check(&proxy, current.clone(), false);
+                }
+            }
+            Event::UserEvent(UserEvent::UpdateCheck { result, manual }) => {
+                checking = false;
+                let mtm = MainThreadMarker::new().expect("the event loop runs on the main thread");
+                match result {
+                    Ok(Some(release)) => {
+                        ui.set_update(UpdateRow::Available(&release.version));
+                        available = Some(release);
+                        if manual {
+                            if let Some(release) = available.as_ref() {
+                                if offer_install(mtm, release, &binary) {
+                                    installing = true;
+                                    ui.set_update(UpdateRow::Installing(&release.version));
+                                    spawn_install(&proxy, release.clone());
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        ui.set_update(UpdateRow::Idle);
+                        if manual {
+                            dialog::notice(
+                                mtm,
+                                "You are up to date",
+                                &format!("chargecap {} is the newest version.", update::CURRENT),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        ui.set_update(UpdateRow::Idle);
+                        if manual {
+                            dialog::error(mtm, &format!("Cannot check for updates. {err}"));
+                        } else {
+                            eprintln!("chargecap: update check failed: {err}");
+                        }
+                    }
+                }
+            }
+            Event::UserEvent(UserEvent::UpdateDone(result)) => {
+                installing = false;
+                match result {
+                    // The new instance is starting; this one steps aside.
+                    Ok(()) => *control_flow = ControlFlow::Exit,
+                    Err(err) => {
+                        let mtm = MainThreadMarker::new()
+                            .expect("the event loop runs on the main thread");
+                        match available.as_ref() {
+                            Some(release) => ui.set_update(UpdateRow::Available(&release.version)),
+                            None => ui.set_update(UpdateRow::Idle),
+                        }
+                        dialog::error(mtm, &format!("The update did not finish. {err}"));
+                    }
+                }
             }
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
                 let Some(action) = Action::from_id(&menu_event.id) else {
@@ -81,6 +172,34 @@ fn main() -> Result<()> {
                 };
                 if matches!(action, Action::Quit) {
                     *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                if matches!(action, Action::Update) {
+                    if checking || installing {
+                        return;
+                    }
+                    let mtm =
+                        MainThreadMarker::new().expect("the event loop runs on the main thread");
+                    match available.as_ref() {
+                        Some(release) => {
+                            if offer_install(mtm, release, &binary) {
+                                installing = true;
+                                ui.set_update(UpdateRow::Installing(&release.version));
+                                spawn_install(&proxy, release.clone());
+                            }
+                        }
+                        None => {
+                            checking = true;
+                            ui.set_update(UpdateRow::Checking);
+                            spawn_check(&proxy, current.clone(), true);
+                        }
+                    }
+                    return;
+                }
+                if matches!(action, Action::ToggleAutoUpdate) {
+                    app_state.check_updates = !app_state.check_updates;
+                    ui.set_auto_update(app_state.check_updates);
+                    save_state(&state_path, &app_state);
                     return;
                 }
                 {
@@ -127,6 +246,81 @@ fn spawn_poller(event_loop: &tao::event_loop::EventLoop<UserEvent>, socket: Path
     tx
 }
 
+/// Seconds since the Unix epoch, or 0 when the clock is before it.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn save_state(state_path: &std::path::Path, app_state: &AppState) {
+    if let Err(err) = state::save(state_path, app_state) {
+        eprintln!("chargecap: cannot save the app state: {err}");
+    }
+}
+
+/// Asks GitHub for a newer release on a worker thread.
+fn spawn_check(proxy: &EventLoopProxy<UserEvent>, current: Version, manual: bool) {
+    let proxy = proxy.clone();
+    std::thread::spawn(move || {
+        let result = update::check(&current).map_err(|err| err.to_string());
+        let _ = proxy.send_event(UserEvent::UpdateCheck { result, manual });
+    });
+}
+
+/// Downloads and installs `release` on a worker thread.
+fn spawn_install(proxy: &EventLoopProxy<UserEvent>, release: Release) {
+    let proxy = proxy.clone();
+    std::thread::spawn(move || {
+        let result = release
+            .dmg_url
+            .as_deref()
+            .ok_or_else(|| "the release has no disk image".to_string())
+            .and_then(|url| update::download(url).map_err(|err| err.to_string()))
+            .and_then(|dmg| {
+                update::install(&dmg, std::path::Path::new(update::APP_PATH))
+                    .map_err(|err| err.to_string())
+            });
+        let _ = proxy.send_event(UserEvent::UpdateDone(result));
+    });
+}
+
+/// Tells the user about `release` and asks to install it.
+///
+/// Returns true when the in-place install should start. When the app does
+/// not run from `/Applications` or the release has no disk image, the
+/// release page opens in the browser instead and this returns false.
+fn offer_install(mtm: MainThreadMarker, release: &Release, binary: &std::path::Path) -> bool {
+    let in_place = release.dmg_url.is_some()
+        && update::bundle_of(binary).as_deref() == Some(std::path::Path::new(update::APP_PATH));
+    if !in_place {
+        let open = dialog::confirm(
+            mtm,
+            &format!("chargecap {} is available", release.version),
+            "Open the release page to download it?",
+            "Open page",
+        );
+        if open {
+            if let Err(err) = Command::new("open").arg(&release.page_url).status() {
+                dialog::error(mtm, &format!("cannot open the browser: {err}"));
+            }
+        }
+        return false;
+    }
+    dialog::confirm(
+        mtm,
+        &format!("chargecap {} is available", release.version),
+        &format!(
+            "You have {}. The update downloads the new version, replaces the app in \
+             Applications, and asks for your password once to update the background \
+             helper. chargecap restarts when it is done.",
+            update::CURRENT
+        ),
+        "Install and restart",
+    )
+}
+
 /// One menu row the user can click.
 enum Action {
     /// Set the limit to this percentage.
@@ -138,6 +332,9 @@ enum Action {
     SetMagsafeLed(MagsafeLedMode),
     ToggleLogin,
     OpenLog,
+    /// Check for updates, or install the one already found.
+    Update,
+    ToggleAutoUpdate,
     Quit,
 }
 
@@ -163,6 +360,8 @@ impl Action {
             ID_TOP_UP => Some(Action::ToggleTopUp),
             ID_LOGIN => Some(Action::ToggleLogin),
             ID_LOG => Some(Action::OpenLog),
+            ID_UPDATE => Some(Action::Update),
+            ID_AUTO_UPDATE => Some(Action::ToggleAutoUpdate),
             ID_QUIT => Some(Action::Quit),
             _ => None,
         }
@@ -238,8 +437,8 @@ fn handle(
                 dialog::error(mtm, &format!("cannot open the log: {err}"));
             }
         }
-        // Handled by the caller, which stops the event loop.
-        Action::Quit => {}
+        // Handled by the caller: these need the update state and the proxy.
+        Action::Update | Action::ToggleAutoUpdate | Action::Quit => {}
     }
     let _ = refresh.send(());
 }
@@ -294,10 +493,12 @@ struct Ui {
     magsafe_led: Vec<(MagsafeLedMode, CheckMenuItem)>,
     login: CheckMenuItem,
     daemon: MenuItem,
+    update: MenuItem,
+    auto_update: CheckMenuItem,
 }
 
 impl Ui {
-    fn build(login_enabled: bool) -> Result<Self> {
+    fn build(login_enabled: bool, auto_update_enabled: bool) -> Result<Self> {
         let menu = Menu::new();
         let summary = MenuItem::new(ui::summary(None), false, None);
         let limit = MenuItem::new(ui::limit_row(None), false, None);
@@ -368,9 +569,25 @@ impl Ui {
 
         let daemon = MenuItem::new(ui::daemon_row(None), false, None);
         let log = MenuItem::with_id(ID_LOG, "Open log", true, None);
-        let quit = MenuItem::with_id(ID_QUIT, "Quit", true, None);
         menu.append(&daemon)?;
         menu.append(&log)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        let version = MenuItem::new(format!("chargecap {}", update::CURRENT), false, None);
+        let update = MenuItem::with_id(ID_UPDATE, "Check for updates…", true, None);
+        let auto_update = CheckMenuItem::with_id(
+            ID_AUTO_UPDATE,
+            "Check for updates automatically",
+            true,
+            auto_update_enabled,
+            None,
+        );
+        menu.append(&version)?;
+        menu.append(&update)?;
+        menu.append(&auto_update)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        let quit = MenuItem::with_id(ID_QUIT, "Quit", true, None);
         menu.append(&quit)?;
 
         let tray = TrayIconBuilder::new()
@@ -390,6 +607,8 @@ impl Ui {
             magsafe_led,
             login,
             daemon,
+            update,
+            auto_update,
         })
     }
 
@@ -427,6 +646,21 @@ impl Ui {
 
     fn set_login(&mut self, enabled: bool) {
         self.login.set_checked(enabled);
+    }
+
+    fn set_auto_update(&mut self, enabled: bool) {
+        self.auto_update.set_checked(enabled);
+    }
+
+    fn set_update(&mut self, row: UpdateRow<'_>) {
+        let (text, enabled) = match row {
+            UpdateRow::Idle => ("Check for updates…".to_string(), true),
+            UpdateRow::Checking => ("Checking for updates…".to_string(), false),
+            UpdateRow::Available(version) => (format!("Update to {version}…"), true),
+            UpdateRow::Installing(version) => (format!("Installing {version}…"), false),
+        };
+        self.update.set_text(text);
+        self.update.set_enabled(enabled);
     }
 }
 

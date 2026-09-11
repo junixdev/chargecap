@@ -17,7 +17,7 @@ The workspace has four crates under `crates/`:
 | `proto` | none | The wire contract (`Request` / `Response`) and the shared file paths: socket, config, log, plist. No behavior. Both binaries depend on it and must stay in lockstep with it. |
 | `smc` | `smcctl` (dev tool) | Read and write access to the SMC (System Management Controller). |
 | `daemon` | `chargecapd` | The root daemon. Talks to the SMC and serves the socket. Subcommands: `daemon`, `install`, `uninstall`, `status`, `limit <n>`. |
-| `app` | `chargecap`, `fake-daemon` (dev tool) | The menu-bar app. Talks to `chargecapd` over its Unix socket. Never touches the SMC directly. |
+| `app` | `chargecap`, `fake-daemon` (dev tool) | The menu-bar app. Talks to `chargecapd` over its Unix socket. Never touches the SMC directly. Also holds the updater (`update.rs`). |
 
 ## Architecture
 
@@ -93,12 +93,31 @@ CHARGECAP_SOCKET=/tmp/chargecap.sock cargo run -p app --bin chargecap
 
 ```sh
 scripts/bundle.sh      # builds target/bundle/chargecap.app, ad-hoc signed
+scripts/make-dmg.sh    # wraps the bundle in target/bundle/chargecap-<version>.dmg
 scripts/install.sh     # bundle + copy to /Applications + install daemon + launch
 scripts/uninstall.sh   # quit, re-enable charging, remove daemon and app
 ```
 
-Or use the `Makefile` targets: `build`, `bundle`, `install`, `uninstall`,
-`test`.
+Or use the `Makefile` targets: `build`, `bundle`, `dmg`, `install`,
+`uninstall`, `test`.
+
+## Updater
+
+`crates/app/src/update.rs` checks `https://api.github.com/repos/junixdev/chargecap/releases`
+once a day, and on demand from the menu. It shells out to `curl`, `hdiutil`,
+`ditto`, `osascript` and `open`, so the app links no TLS stack.
+
+- The app compares release tags with its own `CARGO_PKG_VERSION`. Keep the
+  tag equal to `v` plus the crate version, or the app will not see the
+  release.
+- A pre-release version (`0.2.0-beta.1`) is offered pre-releases. A stable
+  version only sees stable releases.
+- The release must have a `.dmg` asset for the in-place install. Without
+  one, the app opens the release page instead.
+- The in-place install only runs when the app lives at
+  `/Applications/chargecap.app`. From `cargo run` it opens the release page.
+- The daemon binary ships inside the bundle, so the updater re-runs
+  `chargecapd install` through an `osascript` admin prompt after the copy.
 
 ## Debug on real hardware
 
@@ -149,15 +168,21 @@ first. The maintainer can then add you to the allowlist in
 `main` is protected. Force pushes and deletion are blocked, and the CI
 `test` job must pass before a pull request can merge.
 
-Maintainers cut a release by pushing a tag:
+Maintainers cut a release in three steps:
 
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
+1. Set `version` in every `crates/*/Cargo.toml` to the new version, for
+   example `0.2.0` or `0.2.0-beta.1`. Build once so `Cargo.lock` follows.
+2. Commit and push.
+3. Tag with `v` plus the same version and push the tag:
 
-The `Release` workflow builds the bundle, zips it, and attaches it to a
-GitHub release. Bump `version` in every `crates/*/Cargo.toml` first.
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+The `Release` workflow builds the bundle, wraps it in a `.dmg`, and attaches
+it with a SHA-256 file to a GitHub release. A tag with a hyphen, such as
+`v0.2.0-beta.1`, is marked as a pre-release.
 
 ## Code of conduct
 

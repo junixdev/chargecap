@@ -9,6 +9,7 @@ pub mod fake;
 pub mod launch_agent;
 pub mod state;
 pub mod ui;
+pub mod update;
 
 #[cfg(target_os = "macos")]
 pub mod dialog;
