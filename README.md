@@ -25,9 +25,10 @@ scripts/uninstall.sh
 ```
 
 Quits the app, re-enables charging, removes the daemon and the app, and
-cleans up the launch-at-login agent. Your saved charge limit is kept at
-`/Library/Application Support/chargecap/config.json`; pass `--purge` to
-remove it too.
+cleans up the launch-at-login agent. Your saved settings are kept:
+`/Library/Application Support/chargecap/config.json` holds the daemon's
+band, and `~/Library/Application Support/chargecap/app.json` holds the
+limit that "Limit enabled" restores. Pass `--purge` to remove both.
 
 ## Using the menu
 

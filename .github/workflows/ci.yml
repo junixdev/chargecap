@@ -23,3 +23,5 @@ jobs:
         run: scripts/bundle.sh
       - name: dry-run the installer
         run: scripts/install.sh --dry-run
+      - name: check what the uninstaller removes
+        run: scripts/test-uninstall-dry-run.sh

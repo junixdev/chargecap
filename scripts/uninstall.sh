@@ -2,7 +2,7 @@
 # uninstall.sh — quit chargecap, re-enable charging, remove the daemon and
 # the app, and clean up the LaunchAgent and app-support directory.
 #
-#   scripts/uninstall.sh            # keep /Library/Application Support/chargecap/config.json
+#   scripts/uninstall.sh            # keep the saved charge limit and the app state
 #   scripts/uninstall.sh --purge    # also remove the saved charge limit
 #   scripts/uninstall.sh --dry-run  # print every command, run nothing
 #
@@ -57,8 +57,10 @@ if [ "$PURGE" -eq 1 ]; then
   run rm -rf "$APP_SUPPORT"
   run sudo rm -rf "$SYSTEM_APP_SUPPORT"
 else
-  echo "Keeping $SYSTEM_APP_SUPPORT/config.json (pass --purge to remove it)."
-  run rm -rf "$APP_SUPPORT"
+  # WARNING: keep both saved files. $APP_SUPPORT/app.json holds the limit
+  # that "Limit enabled" restores, so removing it here made a reinstall
+  # forget the user's choice, which --purge is meant to do.
+  echo "Keeping $SYSTEM_APP_SUPPORT/config.json and $APP_SUPPORT/app.json (pass --purge to remove them)."
 fi
 
 echo "Done."
