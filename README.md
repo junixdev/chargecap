@@ -84,6 +84,9 @@ Apple Silicon Macs on macOS 14 or later. Intel Macs are not supported.
 `cargo run -p smc --bin smcctl -- probe` prints the mode of the Mac you are
 on. Sleep and wake hooks apply to legacy mode only.
 
+`docs/VERIFICATION.md` records one end-to-end run on a real Mac: the test
+plan, the result of each step, and the seams the pass found.
+
 ## Developer section
 
 ### Architecture
