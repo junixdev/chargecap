@@ -60,12 +60,28 @@ The daemon binary is not on your `PATH` — it lives at
   uses.
 - **Mac stopped charging after uninstall** — run `scripts/uninstall.sh` again
   (it resets the SMC charge gate as part of removing the daemon), or reset
-  the keys by hand from a checkout:
-  `sudo cargo run -p smc --bin smcctl -- write CH0B 00 && sudo cargo run -p smc --bin smcctl -- write CH0C 00`.
+  the gate by hand from a checkout. Run `probe` first: it names the gate
+  this Mac uses.
+  - `CH0B` and `CH0C` present:
+    `sudo cargo run -p smc --bin smcctl -- write CH0B 00 && sudo cargo run -p smc --bin smcctl -- write CH0C 00`
+  - `CHTE` present instead (newer firmware, for example an M3 Pro on macOS
+    15.7): `sudo cargo run -p smc --bin smcctl -- write CHTE 00000000`
+  - `bfF0` present (firmware charge control):
+    `sudo cargo run -p smc --bin smcctl -- write bfF0 00`
 
 ## Supported hardware
 
 Apple Silicon Macs on macOS 14 or later. Intel Macs are not supported.
+
+`chargecap` holds the limit with whichever charge gate the Mac exposes:
+
+| Mode | Keys | Held by |
+|---|---|---|
+| legacy | `CH0B` + `CH0C`, or `CHTE` | the daemon, which opens and closes the gate |
+| firmware | `bfF0`, `bfD0`, `bfE0` | the SMC, which keeps the band while asleep |
+
+`cargo run -p smc --bin smcctl -- probe` prints the mode of the Mac you are
+on. Sleep and wake hooks apply to legacy mode only.
 
 ## Developer section
 
